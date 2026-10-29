@@ -7,6 +7,7 @@ const { openDb } = require('./db');
 const { loadCatalog } = require('./catalog');
 const { createAuth, hashPassword } = require('./auth');
 const { createGame } = require('./game');
+const { createProfile } = require('./profile');
 const { HttpError, bodyOf } = require('./util');
 
 function loadConfig(env = process.env) {
@@ -108,6 +109,7 @@ async function createApp({ db, catalog, config: cfg }) {
   app.use('/api', auth.loadUser);
   app.use('/api/auth', auth.router);
   app.use('/api', createGame({ db, catalog, cfg, limiters, requireAuth: auth.requireAuth }));
+  app.use('/api', createProfile({ db, catalog, limiters, requireAuth: auth.requireAuth }));
   app.use('/api', (req, res, next) => next(new HttpError(404, 'not_found', 'Не знайдено')));
 
   // eslint-disable-next-line no-unused-vars
