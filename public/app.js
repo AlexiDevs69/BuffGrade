@@ -140,15 +140,15 @@ async function getDetail(id) {
 /* ---------- navigation ---------- */
 let view = 'home';
 function show(v) {
-  if ((v === 'inv' || v === 'up') && !requireLogin()) return;
+  if ((v === 'prof' || v === 'up') && !requireLogin()) return;
   view = v;
-  ['home', 'case', 'inv', 'up'].forEach((x) => { $('#v-' + x).hidden = x !== v; });
+  ['home', 'case', 'prof', 'up'].forEach((x) => { $('#v-' + x).hidden = x !== v; });
   document.querySelectorAll('nav [data-go]').forEach((b) => b.classList.toggle('on', b.dataset.go === v || (v === 'case' && b.dataset.go === 'home')));
-  if (v === 'inv') renderInv();
+  if (v === 'prof') renderProfile();
   if (v === 'up') renderUp();
   scrollTo(0, 0);
 }
-function refreshView() { if (view === 'inv') renderInv(); if (view === 'up') renderUp(); }
+function refreshView() { if (view === 'prof') renderProfile(); if (view === 'up') renderUp(); }
 document.addEventListener('click', (e) => {
   const g = e.target.closest('[data-go]'); if (g) { show(g.dataset.go); return; }
   const b = e.target.closest('[data-soon]'); if (b) toast('«' + b.dataset.soon + '» з’явиться на одному з наступних етапів');
@@ -259,6 +259,7 @@ function renderInvLocal() { // draws from cached state, no network call
   });
   const tot = state.inv.reduce((a, i) => a + i.price, 0), sv = state.inv.filter((i) => invSel.has(i.id)).reduce((a, i) => a + i.price, 0);
   $('#isum').textContent = state.inv.length + ' предметів на суму ' + fmt(tot);
+  $('#pvalue').textContent = 'Вартість інвентаря: ' + fmt(tot);
   $('#isell').textContent = invSel.size ? 'Продати вибране (' + invSel.size + ') за ' + fmt(sv) : 'Продати вибране';
   $('#isell').disabled = !invSel.size;
 }
@@ -273,6 +274,122 @@ $('#isell').addEventListener('click', async () => {
   catch (e) { toast(e.message); }
   renderInv();
 });
+
+/* ---------- profile ---------- */
+let profTab = 'inv', histCursor = null, histLoading = false;
+function avatarEl(av, size, name) {
+  const d = document.createElement('div'); d.className = 'av'; d.style.setProperty('--s', size + 'px');
+  if (av && av.type === 'item') {
+    d.style.setProperty('--c', COLORS[av.tier]);
+    const im = document.createElement('img'); im.src = av.image; im.alt = ''; d.append(im);
+  } else { d.style.setProperty('--h', String((av ? av.index : 0) * 30)); d.textContent = (name || '?').slice(0, 1).toUpperCase(); }
+  return d;
+}
+function paintProfile() {
+  const p = state.profile; if (!p) return;
+  $('#pname').textContent = p.username;
+  $('#psince').textContent = 'З нами з ' + new Date(p.createdAt).toLocaleDateString('uk-UA', { year: 'numeric', month: 'long', day: 'numeric' });
+  $('#pavatar').replaceChildren(avatarEl(p.avatar, 112, p.username));
+  const box = $('#pbest'); box.replaceChildren();
+  const l = document.createElement('div'); l.className = 'lbl'; l.textContent = 'Найкращий дроп'; box.append(l);
+  if (!p.bestDrop) { const e = document.createElement('p'); e.className = 'empty'; e.textContent = 'Ще нічого не випало'; box.append(e); return; }
+  const c = icard(p.bestDrop, '');
+  if (p.bestDrop.case) { const ci = document.createElement('img'); ci.className = 'corner'; ci.src = p.bestDrop.case.image; ci.alt = ''; ci.title = p.bestDrop.case.name; c.append(ci); }
+  box.append(c);
+}
+async function renderProfile() {
+  try { const [p] = await Promise.all([api('/profile'), loadInv()]); state.profile = p; paintProfile(); } catch (e) { toast(e.message); }
+  setTab(profTab);
+}
+function setTab(t) {
+  profTab = t;
+  for (const [id, key] of [['#tab-inv', 'inv'], ['#tab-hist', 'hist']]) { $(id).classList.toggle('on', t === key); $(id).setAttribute('aria-selected', String(t === key)); }
+  $('#p-inv').hidden = t !== 'inv'; $('#p-hist').hidden = t !== 'hist';
+  if (t === 'inv') renderInvLocal(); else loadHistory(true);
+}
+$('#tab-inv').addEventListener('click', () => setTab('inv'));
+$('#tab-hist').addEventListener('click', () => setTab('hist'));
+
+const stamp = (ts) => new Date(ts).toLocaleString('uk-UA', { dateStyle: 'short', timeStyle: 'short' });
+function priceEl(v) {
+  const p = document.createElement('div'); p.className = 'price';
+  const c = document.createElement('span'); c.className = 'coin'; const t = document.createElement('span'); t.textContent = fmt(v);
+  p.append(c, t); return p;
+}
+function thumb(it, small) {
+  const im = document.createElement('img'); im.className = 'hthumb' + (small ? ' sm' : ''); im.src = it.image; im.alt = ''; im.title = it.name; im.loading = 'lazy'; return im;
+}
+function textBlock(it, withWear) {
+  const body = document.createElement('div'); body.className = 'hbody';
+  const b = document.createElement('b'); b.textContent = it.name; body.append(b);
+  if (withWear) { const s = document.createElement('span'); s.textContent = it.wear + ', ' + Number(it.float).toFixed(4) + (it.stattrak ? ', StatTrak' : ''); body.append(s); }
+  body.append(priceEl(it.price)); return body;
+}
+function histRow(e) {
+  const row = document.createElement('div'); row.className = 'hrow'; const d = e.data;
+  const time = document.createElement('span'); time.className = 'htime'; time.textContent = stamp(e.at);
+  if (e.kind === 'case') {
+    row.style.setProperty('--c', COLORS[d.item.tier]);
+    const ci = document.createElement('img'); ci.className = 'corner'; ci.src = d.case.image; ci.alt = ''; ci.title = d.case.name;
+    row.append(thumb(d.item), textBlock(d.item, true), ci, time); return row;
+  }
+  row.classList.add(d.win ? 'win' : 'lose');
+  const left = document.createElement('div'); left.className = 'hside';
+  const strip = document.createElement('div'); strip.className = 'hstake';
+  d.stake.slice(0, 4).forEach((it) => strip.append(thumb(it, true)));
+  if (d.stake.length > 4) { const m = document.createElement('span'); m.textContent = '+' + (d.stake.length - 4); strip.append(m); }
+  const lb = document.createElement('div'); lb.className = 'hbody';
+  const t1 = document.createElement('span'); t1.textContent = 'Ставка'; lb.append(t1, priceEl(d.stake.reduce((a, i) => a + i.price, 0)));
+  left.append(strip, lb);
+  const mid = document.createElement('div'); mid.className = 'hmid';
+  const ar = document.createElement('div'); ar.className = 'arrow'; ar.textContent = '→';
+  const ch = document.createElement('span'); ch.textContent = 'шанс ' + Number(d.chance).toFixed(1) + '%';
+  const bd = document.createElement('span'); bd.className = 'badge ' + (d.win ? 'win' : 'lose'); bd.textContent = d.win ? 'Зайшло' : 'Не зайшло';
+  mid.append(ar, ch, bd);
+  const right = document.createElement('div'); right.className = 'hside r';
+  right.append(textBlock(d.target, false), thumb(d.target));
+  row.append(left, mid, right, time); return row;
+}
+async function loadHistory(reset) {
+  if (histLoading) return; histLoading = true;
+  const list = $('#hlist');
+  try {
+    if (reset) { histCursor = null; list.replaceChildren(); }
+    const r = await api('/history?limit=20' + (histCursor ? '&before=' + histCursor : ''));
+    r.entries.forEach((e) => list.append(histRow(e)));
+    histCursor = r.next; $('#hmore').hidden = !r.next;
+    if (reset && !r.entries.length) emptyMsg(list, 'Історія порожня. Відкрий кейс або зроби апгрейд.');
+  } catch (e) { toast(e.message); }
+  histLoading = false;
+}
+$('#hmore').addEventListener('click', () => loadHistory(false));
+
+function openAvatarPicker() {
+  if (!state.profile) return;
+  const colors = $('#avcolors'); colors.replaceChildren();
+  for (let i = 0; i < 12; i++) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'swatch'; b.setAttribute('aria-label', 'Колір ' + (i + 1));
+    b.append(avatarEl({ type: 'color', index: i }, 44, state.profile.username));
+    b.addEventListener('click', () => setAvatar('c:' + i)); colors.append(b);
+  }
+  const seen = new Set(), pool = [];
+  [...state.inv].sort((a, b) => b.price - a.price).forEach((i) => { if (!seen.has(i.key) && pool.length < 24) { seen.add(i.key); pool.push(i); } });
+  const best = state.profile.bestDrop; if (best && !seen.has(best.key)) pool.unshift(best);
+  const g = $('#avitems'); g.replaceChildren();
+  if (!pool.length) emptyMsg(g, 'Відкрий кейс, і тут з’являться твої скіни.');
+  pool.forEach((it) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'pick'; b.style.setProperty('--c', COLORS[it.tier]); b.title = it.name;
+    const im = document.createElement('img'); im.src = it.image; im.alt = it.name; b.append(im);
+    b.addEventListener('click', () => setAvatar('i:' + it.key)); g.append(b);
+  });
+  $('#avdlg').showModal();
+}
+async function setAvatar(a) {
+  try { const r = await api('/profile/avatar', 'POST', { avatar: a }); state.profile.avatar = r.avatar; paintProfile(); $('#avdlg').close(); toast('Аватар оновлено'); }
+  catch (e) { toast(e.message); }
+}
+$('#pavatar').addEventListener('click', openAvatarPicker);
+$('#av-close').addEventListener('click', () => $('#avdlg').close());
 
 /* ---------- upgrader ---------- */
 const upSel = new Set(); let upTarget = null, upBusy = false, upTok = 0;
