@@ -16,7 +16,10 @@ function openDb(file) {
       pass_hash TEXT NOT NULL,
       balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0),
       daily_at INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      avatar TEXT NOT NULL DEFAULT '',            -- 'c:<0-11>' colour preset or 'i:<catalog item key>'
+      best_drop TEXT,                             -- JSON snapshot of the most valuable case drop ever (survives selling)
+      best_price INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS sessions(
       id TEXT PRIMARY KEY,                       -- sha256(token), the raw token is never stored
@@ -49,7 +52,20 @@ function openDb(file) {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS ledger_user ON ledger(user_id, id);
+    CREATE TABLE IF NOT EXISTS history(
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('case','upgrade')),
+      data TEXT NOT NULL,                         -- JSON snapshot written by the server only
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS history_user ON history(user_id, id);
   `);
+  // Migration for databases created before profiles existed.
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!cols.includes('avatar')) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes('best_drop')) db.exec('ALTER TABLE users ADD COLUMN best_drop TEXT');
+  if (!cols.includes('best_price')) db.exec('ALTER TABLE users ADD COLUMN best_price INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
