@@ -17,13 +17,13 @@
     <a href="#" data-go="home" class="logo" aria-label="BuffGrade, на головну"><i></i>BuffGrade</a>
     <nav aria-label="Основне меню">
       <button data-go="home" class="on">Кейси</button>
-      <button data-go="inv">Інвентар</button>
+      <button data-go="prof">Профіль</button>
       <button data-go="up">Апгрейдер</button>
       <button data-soon="Бої кейсів">Бої</button>
       <button data-soon="Контракти обміну">Контракти</button>
     </nav>
     <div class="wallet" id="wallet" hidden title="Віртуальна валюта, за гроші не купується"><span class="coin"></span><span id="bal">0</span></div>
-    <span class="who" id="who" hidden></span>
+    <button class="who" id="who" data-go="prof" hidden></button>
     <button class="btn btn-ghost" id="login">Увійти</button>
     <button class="btn btn-ghost" id="logout" hidden>Вийти</button>
   </div>
@@ -76,14 +76,29 @@
   <div id="cpool"></div>
 </div>
 
-<div class="wrap view" id="v-inv" hidden>
-  <div class="head" style="margin-top:32px"><h2>Інвентар</h2><p id="isum"></p></div>
-  <div class="tools">
-    <select id="ifilter" aria-label="Фільтр за рідкістю"><option value="all">Усі рідкості</option><option value="mil">Армійське</option><option value="res">Обмежене</option><option value="cls">Засекречене</option><option value="cov">Таємне</option><option value="rare">Рідкісне</option></select>
-    <button class="btn btn-ghost" id="iall">Обрати всі</button>
-    <button class="btn btn-main" id="isell" disabled>Продати вибране</button>
+<div class="wrap view" id="v-prof" hidden>
+  <div class="ptop">
+    <button class="avatar-btn" id="pavatar" aria-label="Змінити аватар" title="Змінити аватар"></button>
+    <div class="pinfo"><h2 id="pname"></h2><p id="psince"></p><p id="pvalue"></p></div>
+    <div class="pbest" id="pbest"></div>
   </div>
-  <div class="igrid" id="igrid"></div>
+  <div class="seg" role="tablist" aria-label="Розділ профілю">
+    <button role="tab" id="tab-inv" class="on" aria-selected="true">Інвентар</button>
+    <button role="tab" id="tab-hist" aria-selected="false">Історія</button>
+  </div>
+  <div id="p-inv">
+    <div class="tools">
+      <select id="ifilter" aria-label="Фільтр за рідкістю"><option value="all">Усі рідкості</option><option value="mil">Армійське</option><option value="res">Обмежене</option><option value="cls">Засекречене</option><option value="cov">Таємне</option><option value="rare">Рідкісне</option></select>
+      <button class="btn btn-ghost" id="iall">Обрати всі</button>
+      <button class="btn btn-main" id="isell" disabled>Продати вибране</button>
+      <span class="sp" id="isum"></span>
+    </div>
+    <div class="igrid" id="igrid"></div>
+  </div>
+  <div id="p-hist" hidden>
+    <div class="hlist" id="hlist"></div>
+    <button class="btn btn-ghost" id="hmore" hidden style="margin-top:14px">Показати ще</button>
+  </div>
 </div>
 
 <div class="wrap view" id="v-up" hidden>
@@ -116,6 +131,15 @@
     <button class="btn btn-ghost" id="a-switch" type="button"></button>
     <button class="btn btn-ghost" id="a-close" type="button">Закрити</button>
   </form>
+</dialog>
+<dialog id="avdlg" aria-labelledby="av-title">
+  <div class="dlgbox">
+    <h2 id="av-title">Аватар</h2>
+    <div class="swatches" id="avcolors"></div>
+    <h3 class="sub" style="margin:4px 0 0">З твого інвентаря</h3>
+    <div class="igrid scroll" id="avitems"></div>
+    <button class="btn btn-ghost" id="av-close" type="button">Закрити</button>
+  </div>
 </dialog>
 <div class="toast" id="toast" role="status"></div>
 
