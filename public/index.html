@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BuffGrade – симулятор кейсів CS2</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📦</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a href="#" data-go="home" class="logo" aria-label="BuffGrade, на головну"><i></i>BuffGrade</a>
+    <nav aria-label="Основне меню">
+      <button data-go="home" class="on">Кейси</button>
+      <button data-go="inv">Інвентар</button>
+      <button data-go="up">Апгрейдер</button>
+      <button data-soon="Бої кейсів">Бої</button>
+      <button data-soon="Контракти обміну">Контракти</button>
+    </nav>
+    <div class="wallet" id="wallet" hidden title="Віртуальна валюта, за гроші не купується"><span class="coin"></span><span id="bal">0</span></div>
+    <span class="who" id="who" hidden></span>
+    <button class="btn btn-ghost" id="login">Увійти</button>
+    <button class="btn btn-ghost" id="logout" hidden>Вийти</button>
+  </div>
+</header>
+
+<main>
+<div class="wrap" id="v-home">
+  <div class="hero">
+    <h1>Відкривай кейси без витрат</h1>
+    <p>Симулятор CS2 з кейсами, апгрейдером і боями. Валюта віртуальна, донату немає, а все, що випало, зберігається в твоєму акаунті.</p>
+    <div class="cta">
+      <a class="btn btn-main" href="#cases">Відкрити кейс</a>
+      <button class="btn btn-ghost" id="daily">Забрати щоденний бонус</button>
+    </div>
+
+    <div class="reel-box">
+      <div class="reel" aria-hidden="true"><div class="pointer"></div><div class="track" id="track"></div></div>
+      <div class="drop" id="drop" aria-live="polite">Готуємо рулетку…</div>
+      <button class="btn btn-ghost" id="respin" style="margin-top:6px" disabled>Крутнути ще раз</button>
+    </div>
+  </div>
+
+  <section id="cases">
+    <div class="head">
+      <h2>Кейси</h2>
+      <p id="casesNote">Завантажуємо актуальні кейси CS2…</p>
+    </div>
+    <div class="cases" id="cases-grid"></div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Режими</h2><p>Те, що ми будуємо далі</p></div>
+    <div class="modes">
+      <button class="mode lead" data-go="up"><h3>Апгрейдер</h3><p>Став скіни й обирай ціль дорожчу. Шанс залежить від різниці цін.</p><em>Вже працює</em></button>
+      <button class="mode" data-soon="Бої кейсів"><h3>Бої кейсів</h3><p>Двоє крутять один кейс, у кого дорожчий дроп, той забирає обидва.</p><em>Потрібні акаунти</em></button>
+      <button class="mode" data-soon="Контракти обміну"><h3>Контракти</h3><p>Обміняй десять скінів на один вищої рідкості.</p><em>Скоро</em></button>
+      <button class="mode" data-soon="Квести"><h3>Квести і рівні</h3><p>Щоденні завдання, досвід і бейджі біля ніку.</p><em>Скоро</em></button>
+    </div>
+  </section>
+</div>
+
+<div class="wrap view" id="v-case" hidden>
+  <button class="btn btn-ghost back" data-go="home">Назад до кейсів</button>
+  <div class="chead">
+    <div class="art" id="cimg"></div>
+    <div><h2 id="cname"></h2><div class="price" id="cprice"></div><button class="btn btn-main" id="copen">Відкрити</button></div>
+  </div>
+  <div class="reel"><div class="pointer"></div><div class="track" id="ctrack"></div></div>
+  <div id="cres" aria-live="polite"></div>
+  <div id="cpool"></div>
+</div>
+
+<div class="wrap view" id="v-inv" hidden>
+  <div class="head" style="margin-top:32px"><h2>Інвентар</h2><p id="isum"></p></div>
+  <div class="tools">
+    <select id="ifilter" aria-label="Фільтр за рідкістю"><option value="all">Усі рідкості</option><option value="mil">Армійське</option><option value="res">Обмежене</option><option value="cls">Засекречене</option><option value="cov">Таємне</option><option value="rare">Рідкісне</option></select>
+    <button class="btn btn-ghost" id="iall">Обрати всі</button>
+    <button class="btn btn-main" id="isell" disabled>Продати вибране</button>
+  </div>
+  <div class="igrid" id="igrid"></div>
+</div>
+
+<div class="wrap view" id="v-up" hidden>
+  <div class="head" style="margin-top:32px"><h2>Апгрейдер</h2><p>Став скіни, обирай дорожчу ціль. Шанс рахується з комісією 5%</p></div>
+  <div class="upbox">
+    <div class="wheel" id="wheel"><div class="needle" id="needle"></div><div class="wc"><b id="wpct">0%</b><span>шанс успіху</span></div></div>
+    <button class="btn btn-main" id="upgo" disabled>Апгрейдити</button>
+    <div class="drop" id="upres" aria-live="polite"></div>
+  </div>
+  <div class="upgrid">
+    <div><h3 class="sub" style="margin-top:0">Твої скіни</h3><div class="igrid scroll" id="uplist"></div></div>
+    <div><h3 class="sub" style="margin-top:0">Ціль</h3><div class="igrid scroll" id="uptargets"></div></div>
+  </div>
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>BuffGrade – незалежний фан-проєкт. Він не пов’язаний із Valve та не схвалений ними. Counter-Strike і назви скінів належать їхнім власникам. Усі предмети й валюта віртуальні, їх не можна купити, продати чи вивести.</p>
+    <p>Дані та зображення: CSGO-API від ByMykel.</p>
+  </div>
+</footer>
+<dialog id="auth" aria-labelledby="a-title">
+  <form id="a-form">
+    <h2 id="a-title">Вхід</h2>
+    <label>Нік<input id="a-user" name="username" autocomplete="username" required minlength="3" maxlength="20" pattern="[A-Za-z0-9_]{3,20}"></label>
+    <label>Пароль<input id="a-pass" name="password" type="password" required minlength="8" maxlength="128"></label>
+    <p class="err" id="a-err" role="alert"></p>
+    <button class="btn btn-main" id="a-submit" type="submit">Увійти</button>
+    <button class="btn btn-ghost" id="a-switch" type="button"></button>
+    <button class="btn btn-ghost" id="a-close" type="button">Закрити</button>
+  </form>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
