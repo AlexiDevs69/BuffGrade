@@ -7,6 +7,7 @@ const { DAY } = require('./auth');
 
 const MAX_UP_ITEMS = 10;
 const MAX_SELL = 100;
+const MAX_HISTORY = 500; // per user; older rows are pruned (best drop is stored separately, so it is never lost)
 const MIN_CHANCE_PPM = 10000;  // 1%: below this the upgrade is refused (never clamped upwards, that would be an exploit)
 const MAX_CHANCE_PPM = 900000; // 90%
 const FEE_PPM = 950000;        // 5% house fee: chance = sum / price * 0.95
@@ -24,6 +25,8 @@ function validIds(v, max) {
   if (new Set(v).size !== v.length) throw bad('Предмети не можуть повторюватися');
   return v;
 }
+const snapRow = (r) => { const { id, ...rest } = itemView(r); return rest; };
+const snapDrop = (d) => ({ key: d.key, name: d.name, image: d.image, tier: d.tier, wear: d.wear, float: d.float, stattrak: !!d.stattrak, price: d.price });
 const rawChancePpm = (sum, price) => Math.floor((sum * FEE_PPM) / price);
 
 function createGame({ db, catalog, cfg, limiters, requireAuth }) {
@@ -37,6 +40,11 @@ function createGame({ db, catalog, cfg, limiters, requireAuth }) {
     inv: db.prepare('SELECT * FROM items WHERE user_id = ? ORDER BY price DESC, created_at DESC'),
     ledger: db.prepare('INSERT INTO ledger(user_id, kind, delta, balance_after, meta, created_at) VALUES(?,?,?,?,?,?)'),
     daily: db.prepare('SELECT daily_at FROM users WHERE id = ?'),
+    insHist: db.prepare('INSERT INTO history(user_id, kind, data, created_at) VALUES(?,?,?,?)'),
+    pruneHist: db.prepare(`DELETE FROM history WHERE user_id = ? AND id NOT IN
+                           (SELECT id FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ${MAX_HISTORY})`),
+    bestPrice: db.prepare('SELECT best_price FROM users WHERE id = ?'),
+    setBest: db.prepare('UPDATE users SET best_drop = ?, best_price = ? WHERE id = ?'),
     setDaily: db.prepare('UPDATE users SET balance = balance + ?, daily_at = ? WHERE id = ?'),
   };
   const bal = (uid) => q.balance.get(uid).balance;
@@ -54,6 +62,10 @@ function createGame({ db, catalog, cfg, limiters, requireAuth }) {
     const id = insert(uid, drop, now);
     const after = bal(uid);
     q.ledger.run(uid, 'case_open', -c.price, after, JSON.stringify({ case: c.id, item: id, price: drop.price }), now);
+    const snap = snapDrop(drop), from = { id: c.id, name: c.name, image: c.image };
+    q.insHist.run(uid, 'case', JSON.stringify({ case: from, item: snap }), now);
+    if (drop.price > q.bestPrice.get(uid).best_price) q.setBest.run(JSON.stringify({ ...snap, case: from, at: now }), drop.price, uid);
+    q.pruneHist.run(uid, uid);
     return { item: itemView(q.item.get(id)), balance: after };
   });
 
@@ -79,10 +91,18 @@ function createGame({ db, catalog, cfg, limiters, requireAuth }) {
     const chance = Math.min(MAX_CHANCE_PPM, raw);
     const roll = randInt(1000000);
     const win = roll < chance;
+    const stake = rows.map(snapRow);
     db.prepare(`DELETE FROM items WHERE user_id = ? AND id IN (${inList(ids)})`).run(uid, ...ids);
     let item = null;
     if (win) item = itemView(q.item.get(insert(uid, makeInstance(target, FT), now)));
     q.ledger.run(uid, 'upgrade', 0, bal(uid), JSON.stringify({ sum, target: target.key, price: target.price, chance, roll, win }), now);
+    q.insHist.run(uid, 'upgrade', JSON.stringify({
+      stake,
+      target: { key: target.key, name: target.name, image: target.image, tier: target.tier, price: target.price },
+      chance: chance / 10000, roll: roll / 10000, win,
+      result: item ? (({ id, ...rest }) => rest)(item) : null,
+    }), now);
+    q.pruneHist.run(uid, uid);
     return { win, item, chance: chance / 10000, roll: roll / 10000, balance: bal(uid) };
   });
 
