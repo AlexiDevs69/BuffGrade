@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>BuffGrade – адмінка</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛠️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a href="/" class="logo" aria-label="BuffGrade, на головну"><i></i>BuffGrade</a>
+    <span class="atag">Адмінка</span>
+    <a class="btn btn-ghost" href="/" style="margin-left:auto">← На сайт</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <p class="empty" id="gate">Перевіряємо доступ…</p>
+
+  <div id="panel" hidden>
+    <div class="seg" role="tablist" aria-label="Розділ адмінки">
+      <button role="tab" id="atab-skins" class="on" aria-selected="true">Скіни</button>
+      <button role="tab" id="atab-cases" aria-selected="false">Кейси</button>
+      <button role="tab" id="atab-users" aria-selected="false">Гравці</button>
+    </div>
+
+    <!-- ===== Скіни ===== -->
+    <div id="a-skins">
+      <div class="acard">
+        <h3>Видати скін гравцю</h3>
+        <p class="hint">Знайди будь-який скін (зі справжнього каталогу або свій) і видай його в інвентар. Якщо вказати флоут, знос визначається сам (FN до 0.07, MW до 0.15, FT до 0.38, WW до 0.45, далі BS).</p>
+        <div id="pk-give"></div>
+        <div id="give-sel" class="sel-box"><p class="empty">Скін ще не обрано</p></div>
+        <div class="afields">
+          <label>Нік гравця<input id="g-user" maxlength="20" placeholder="порожньо = ти" autocomplete="off"></label>
+          <label>Знос<select id="g-wear"><option value="">Випадковий</option><option>FN</option><option>MW</option><option>FT</option><option>WW</option><option>BS</option></select></label>
+          <label>Флоут (0 – 1)<input id="g-float" type="number" min="0" max="1" step="0.0001" placeholder="напр. 0.0123"></label>
+          <label>Ціна (монети)<input id="g-price" type="number" min="1" step="1" placeholder="порожньо = авто"></label>
+          <label>Кількість<input id="g-count" type="number" min="1" max="50" step="1" value="1"></label>
+          <label class="chk"><input id="g-st" type="checkbox"> StatTrak™</label>
+        </div>
+        <div><button class="btn btn-main" id="give-go" disabled>Видати</button></div>
+        <p class="drop" id="give-res" aria-live="polite"></p>
+      </div>
+
+      <div class="acard">
+        <h3>Створити свій скін</h3>
+        <p class="hint">Вигаданий скін зберігається назавжди. Його можна видавати й додавати в свої кейси. Картинка: https-посилання на дозволений хост або картинка існуючого скіна.</p>
+        <div class="afields">
+          <label>Назва<input id="i-name" maxlength="120" placeholder="AK-47 | Моя Кара" autocomplete="off"></label>
+          <label>Картинка (https)<input id="i-image" maxlength="500" placeholder="https://…" autocomplete="off"></label>
+          <label>Рідкість<select id="i-tier"><option value="mil">Армійське</option><option value="res">Обмежене</option><option value="cls">Засекречене</option><option value="cov" selected>Таємне</option><option value="rare">Рідкісне</option></select></label>
+          <label>Ціна FT (монети)<input id="i-price" type="number" min="1" step="1" placeholder="напр. 50000"></label>
+          <label class="chk"><input id="i-st" type="checkbox" checked> Може бути StatTrak™</label>
+        </div>
+        <details>
+          <summary>Взяти картинку (і назву) з існуючого скіна</summary>
+          <div id="pk-iimg" style="margin-top:10px"></div>
+        </details>
+        <div><button class="btn btn-main" id="item-go">Створити скін</button></div>
+      </div>
+
+      <div class="acard">
+        <h3>Мої скіни</h3>
+        <div class="alist" id="items-list"></div>
+      </div>
+    </div>
+
+    <!-- ===== Кейси ===== -->
+    <div id="a-cases" hidden>
+      <div class="acard">
+        <h3>Створити кейс</h3>
+        <p class="hint">Шанс скіна = його вага ÷ сума всіх ваг. Приклад: вага 1 і 99 дає 1% та 99%. Ціна може бути будь-якою, навіть 0. Свої кейси показуються на головній першими.</p>
+        <div class="afields">
+          <label>Назва кейса<input id="c-name" maxlength="60" placeholder="Мій кейс" autocomplete="off"></label>
+          <label>Картинка кейса (https)<input id="c-image" maxlength="500" placeholder="https://…" autocomplete="off"></label>
+          <label>Ціна (монети)<input id="c-price" type="number" min="0" step="1" placeholder="напр. 300"></label>
+        </div>
+        <details>
+          <summary>Взяти картинку з існуючого кейса чи скіна</summary>
+          <div id="pk-cimg" style="margin-top:10px"></div>
+        </details>
+        <h3 class="sub" style="margin:8px 0 0">Скіни в кейсі</h3>
+        <div id="pk-case"></div>
+        <div class="alist" id="case-items"><p class="empty">Додай хоча б один скін (клік по скіну в результатах пошуку)</p></div>
+        <div><button class="btn btn-main" id="case-go">Створити кейс</button></div>
+      </div>
+      <div class="acard">
+        <h3>Мої кейси</h3>
+        <div class="alist" id="cases-list"></div>
+      </div>
+    </div>
+
+    <!-- ===== Гравці ===== -->
+    <div id="a-users" hidden>
+      <div class="acard">
+        <h3>Баланс гравця</h3>
+        <p class="hint">Додати або забрати монети. Мінус забирає (не більше, ніж є в гравця). Усе записується в ledger.</p>
+        <div class="afields">
+          <label>Нік гравця<input id="b-user" maxlength="20" placeholder="порожньо = ти" autocomplete="off"></label>
+          <label>Сума (+/−)<input id="b-delta" type="number" step="1" placeholder="напр. 100000 або -500"></label>
+        </div>
+        <div><button class="btn btn-main" id="bal-go">Застосувати</button></div>
+        <p class="drop" id="bal-res" aria-live="polite"></p>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast" role="status"></div>
+<script src="/admin.js" defer></script>
+</body>
+</html>
