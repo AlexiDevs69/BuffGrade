@@ -142,9 +142,10 @@ let view = 'home';
 function show(v) {
   if ((v === 'prof' || v === 'up') && !requireLogin()) return;
   view = v;
-  ['home', 'case', 'prof', 'up'].forEach((x) => { $('#v-' + x).hidden = x !== v; });
+  ['home', 'case', 'market', 'prof', 'up'].forEach((x) => { $('#v-' + x).hidden = x !== v; });
   document.querySelectorAll('nav [data-go]').forEach((b) => b.classList.toggle('on', b.dataset.go === v || (v === 'case' && b.dataset.go === 'home')));
   if (v === 'prof') renderProfile();
+  if (v === 'market') renderMarket();
   if (v === 'up') renderUp();
   scrollTo(0, 0);
 }
@@ -165,6 +166,7 @@ async function loadCases() {
       const art = document.createElement('div'); art.className = 'art';
       const im = document.createElement('img'); im.src = c.image; im.alt = ''; im.loading = 'lazy'; art.append(im);
       const h = document.createElement('h3'); h.textContent = c.name;
+      if (c.kind === 'terminal') { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = 'Термінал'; el.append(tg); }
       const p = document.createElement('div'); p.className = 'price';
       const coin = document.createElement('span'); coin.className = 'coin';
       const v = document.createElement('span'); v.textContent = fmt(c.price);
@@ -203,8 +205,7 @@ async function openCase(c) {
     const im = new Image(); im.src = d.image; im.alt = ''; $('#cimg').replaceChildren(im);
     const coin = document.createElement('span'); coin.className = 'coin';
     $('#cprice').replaceChildren(coin, ' ' + fmt(d.price));
-    $('#copen').textContent = 'Відкрити за ' + fmt(d.price);
-    const tr = $('#ctrack'); tr.style.transition = 'none'; tr.style.transform = 'none'; tr.replaceChildren(...d.items.slice(0, 12).map(cell));
+    idleReel(d); paintCtl();
     const box = $('#cpool'); box.replaceChildren();
     ['mil', 'res', 'cls', 'cov', 'rare'].forEach((t) => {
       const l = d.items.filter((i) => i.tier === t); if (!l.length) return;
@@ -213,17 +214,65 @@ async function openCase(c) {
     });
   } catch (e) { toast(e.message); }
 }
+const pref = {
+  get(k, d) { try { return localStorage.getItem(k) || d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+};
+let openN = 1, speed = pref.get('bg_speed', 'normal');
+if (!['normal', 'fast', 'instant'].includes(speed)) speed = 'normal';
+function paintCtl() {
+  document.querySelectorAll('#cnt button').forEach((b) => b.classList.toggle('on', Number(b.dataset.n) === openN));
+  document.querySelectorAll('#spd button').forEach((b) => b.classList.toggle('on', b.dataset.s === speed));
+  const d = state.cur;
+  if (d) $('#copen').textContent = 'Відкрити' + (openN > 1 ? ' ×' + openN : '') + ' за ' + fmt(d.price * openN);
+}
+$('#cnt').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || state.busy) return; openN = Number(b.dataset.n); paintCtl(); });
+$('#spd').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; speed = b.dataset.s; pref.set('bg_speed', speed); paintCtl(); });
+function makeReel() {
+  const r = document.createElement('div'); r.className = 'reel';
+  const p = document.createElement('div'); p.className = 'pointer';
+  const t = document.createElement('div'); t.className = 'track'; r.append(p, t); return r;
+}
+function idleReel(d) {
+  const r = makeReel(); r.querySelector('.track').replaceChildren(...d.items.slice(0, 12).map(cell));
+  $('#creels').className = 'reels'; $('#creels').replaceChildren(r);
+}
 async function openNow() {
   const d = state.cur; if (state.busy || !d || !requireLogin()) return;
+  const n = openN;
+  if (state.me.balance < d.price * n) { toast('Не вистачає монет на ' + n + ' шт.'); return; }
   state.busy = true; $('#copen').disabled = true; $('#cres').replaceChildren();
   try {
-    const r = await api('/cases/' + encodeURIComponent(d.id) + '/open', 'POST');
+    const r = await api('/cases/' + encodeURIComponent(d.id) + '/open', 'POST', { count: n });
     setBal(r.balance);
-    const items = weightedItems(d, 46); items[38] = r.item;
-    await runReel($('#ctrack'), items, 38, 6000);
-    showRes(r.item);
+    if (speed === 'instant' || quickMotion()) idleReel(d);
+    else {
+      const box = $('#creels'); box.className = 'reels' + (n > 1 ? ' multi' : '');
+      const reels = r.items.map(() => makeReel()); box.replaceChildren(...reels);
+      await Promise.all(r.items.map((it, i) => {
+        const items = weightedItems(d, 46); items[38] = it; // all reels spin at the same time
+        return runReel(reels[i].querySelector('.track'), items, 38, speed === 'fast' ? 1800 : 6000);
+      }));
+    }
+    showResults(r.items, d.price * n);
   } catch (e) { toast(e.message); }
   state.busy = false; $('#copen').disabled = false;
+}
+function showResults(items, cost) {
+  if (items.length === 1) { showRes(items[0]); return; }
+  const box = $('#cres'), w = document.createElement('div'); w.className = 'batch';
+  const value = items.reduce((a, i) => a + i.price, 0);
+  const head = document.createElement('div'); head.className = 'bhead';
+  const p = document.createElement('p'); p.textContent = 'Випало ' + items.length + ' предметів на суму ' + fmt(value) + ', витрачено ' + fmt(cost) + '. Усе вже в інвентарі.';
+  const b = document.createElement('button'); b.className = 'btn btn-ghost'; b.textContent = 'Продати все за ' + fmt(value);
+  b.addEventListener('click', async () => {
+    b.disabled = true;
+    try { const r = await api('/inventory/sell', 'POST', { ids: items.map((i) => i.id) }); setBal(r.balance); box.replaceChildren(); toast('Продано за ' + fmt(r.sold) + ' монет'); }
+    catch (e) { toast(e.message); b.disabled = false; }
+  });
+  head.append(p, b);
+  const g = document.createElement('div'); g.className = 'igrid static'; items.forEach((it) => g.append(icard(it, '')));
+  w.append(head, g); box.replaceChildren(w);
 }
 function showRes(g) {
   const box = $('#cres'), w = document.createElement('div'); w.className = 'rescard'; w.style.setProperty('--c', COLORS[g.tier]);
@@ -274,6 +323,81 @@ $('#isell').addEventListener('click', async () => {
   catch (e) { toast(e.message); }
   renderInv();
 });
+
+/* ---------- market ---------- */
+const MF = { q: '', cat: '', tier: new Set(), wear: new Set(), st: 'any', min: '', max: '', case: '', sort: 'price_asc', page: 1 };
+let mTok = 0, mTimer = 0;
+function mQuery() {
+  const p = new URLSearchParams();
+  if (MF.q) p.set('q', MF.q);
+  if (MF.cat) p.set('cat', MF.cat);
+  if (MF.tier.size) p.set('tier', [...MF.tier].join(','));
+  if (MF.wear.size) p.set('wear', [...MF.wear].join(','));
+  if (MF.st !== 'any') p.set('st', MF.st);
+  if (MF.min !== '') p.set('min', MF.min);
+  if (MF.max !== '') p.set('max', MF.max);
+  if (MF.case) p.set('case', MF.case);
+  p.set('sort', MF.sort); p.set('page', String(MF.page));
+  return p.toString();
+}
+function syncFilters() {
+  const checked = (sel) => [...document.querySelectorAll(sel + ':checked')].map((x) => x.value);
+  const num = (v) => { const n = Math.floor(Number(v)); return v !== '' && Number.isFinite(n) && n >= 0 ? String(Math.min(n, 1e9)) : ''; };
+  MF.q = $('#mq').value.trim().slice(0, 60);
+  MF.cat = checked('input[name=mcat]')[0] || '';
+  MF.tier = new Set(checked('input[name=mtier]')); MF.wear = new Set(checked('input[name=mwear]'));
+  MF.st = checked('input[name=mst]')[0] || 'any';
+  MF.min = num($('#mmin').value); MF.max = num($('#mmax').value);
+  MF.case = $('#mcase').value; MF.sort = $('#msort').value;
+}
+function onFilter(e) {
+  if (!e.target.closest('#mfilters, #msort')) return;
+  syncFilters(); MF.page = 1; clearTimeout(mTimer); mTimer = setTimeout(loadMarket, 250);
+}
+$('#v-market').addEventListener('input', onFilter);
+$('#v-market').addEventListener('change', onFilter);
+$('#mreset').addEventListener('click', () => {
+  ['#mq', '#mmin', '#mmax', '#mcase'].forEach((id) => { $(id).value = ''; });
+  document.querySelectorAll('#mfilters input[type=checkbox]').forEach((c) => { c.checked = false; });
+  $('input[name=mcat][value=""]').checked = true; $('input[name=mst][value=any]').checked = true;
+  syncFilters(); MF.page = 1; loadMarket();
+});
+$('#mprev').addEventListener('click', () => { MF.page = Math.max(1, MF.page - 1); loadMarket(); scrollTo(0, 0); });
+$('#mnext').addEventListener('click', () => { MF.page += 1; loadMarket(); scrollTo(0, 0); });
+function mcard(l) {
+  const c = icard(l, 'mc', l.wear + (l.stattrak ? ', StatTrak' : ''));
+  const b = document.createElement('button'); b.className = 'btn btn-main buy'; b.textContent = 'Купити';
+  b.addEventListener('click', () => buy(l, b)); c.append(b); return c;
+}
+async function buy(l, btn) {
+  if (!requireLogin()) return;
+  btn.disabled = true;
+  try {
+    const r = await api('/market/buy', 'POST', { key: l.key, wear: l.wear, stattrak: l.stattrak });
+    setBal(r.balance); toast('Куплено: ' + r.item.name + ' за ' + fmt(r.cost));
+  } catch (e) { toast(e.message); }
+  btn.disabled = false;
+}
+async function loadMarket() {
+  const tok = ++mTok;
+  try {
+    const r = await api('/market?' + mQuery());
+    if (tok !== mTok) return; // a newer filter change superseded this response
+    MF.page = r.page;
+    $('#mcount').textContent = 'Знайдено: ' + fmt(r.total);
+    const g = $('#mgrid'); g.replaceChildren();
+    if (!r.listings.length) emptyMsg(g, 'Нічого не знайдено. Спробуй змінити фільтри.');
+    r.listings.forEach((l) => g.append(mcard(l)));
+    $('#mpage').textContent = 'Сторінка ' + r.page + ' з ' + r.pages;
+    $('#mprev').disabled = r.page <= 1; $('#mnext').disabled = r.page >= r.pages;
+  } catch (e) { toast(e.message); }
+}
+function renderMarket() {
+  const sel = $('#mcase');
+  if (sel.options.length <= 1) state.cases.forEach((c) => { const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; sel.append(o); });
+  if (!matchMedia('(max-width:760px)').matches) $('#mfdet').open = true;
+  syncFilters(); loadMarket();
+}
 
 /* ---------- profile ---------- */
 let profTab = 'inv', histCursor = null, histLoading = false;
