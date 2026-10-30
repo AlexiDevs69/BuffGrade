@@ -136,7 +136,7 @@ function createGame({ db, catalog, cfg, limiters, requireAuth }) {
     if (!c) throw new HttpError(404, 'case_not_found', 'Кейс не знайдено');
     res.json({
       id: c.id, name: c.name, kind: c.kind, image: c.image, price: c.price, odds: c.odds,
-      items: c.items.map(({ key, name, image, tier }) => ({ key, name, image, tier })),
+      items: c.items.map(({ key, name, image, tier, chance }) => (chance === undefined ? { key, name, image, tier } : { key, name, image, tier, chance })),
     });
   });
 
