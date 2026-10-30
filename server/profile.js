@@ -9,6 +9,7 @@ const nameHash = (s) => { let x = 0; for (const ch of s) x = (Math.imul(x, 31) +
 
 function createProfile({ db, catalog, limiters, requireAuth }) {
   const r = express.Router();
+  const lookup = (key) => catalog.items.get(key) || (catalog.customItems && catalog.customItems.get(key)); // catalog or admin-made
   const guard = [requireAuth, limiters.game];
   const q = {
     user: db.prepare('SELECT username, avatar, best_drop, created_at FROM users WHERE id = ?'),
@@ -23,7 +24,7 @@ function createProfile({ db, catalog, limiters, requireAuth }) {
     const m = /^c:(\d{1,2})$/.exec(a);
     if (m && Number(m[1]) < COLOR_PRESETS) return { type: 'color', index: Number(m[1]) };
     if (a.startsWith('i:')) {
-      const it = catalog.items.get(a.slice(2));
+      const it = lookup(a.slice(2));
       if (it) return { type: 'item', key: it.key, name: it.name, image: it.image, tier: it.tier };
     }
     return { type: 'color', index: nameHash(u.username) % COLOR_PRESETS };
@@ -45,7 +46,7 @@ function createProfile({ db, catalog, limiters, requireAuth }) {
       if (Number(m[1]) >= COLOR_PRESETS) throw bad('Немає такого кольору');
     } else if (a.startsWith('i:')) {
       const key = a.slice(2);
-      if (!catalog.items.has(key)) throw bad('Невідомий предмет');
+      if (!lookup(key)) throw bad('Невідомий предмет');
       const best = safeParse(q.user.get(req.user.id).best_drop);
       if (!q.owns.get(req.user.id, key) && !(best && best.key === key)) {
         throw new HttpError(403, 'not_owned', 'Аватаркою може бути лише скін, який у тебе є або був найкращим дропом');
