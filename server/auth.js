@@ -48,6 +48,8 @@ function validPassword(v, username) {
 
 function createAuth({ db, cfg, limiters }) {
   const COOKIE = cfg.isProd ? '__Host-bg_sid' : 'bg_sid';
+  const admins = cfg.admins instanceof Set ? cfg.admins : new Set(); // lower-case nicks from ADMIN_USERS
+  const isAdminName = (name) => admins.has(String(name).toLowerCase());
   const cookieOpts = { httpOnly: true, secure: cfg.isProd, sameSite: 'lax', path: '/' };
 
   const q = {
@@ -68,6 +70,7 @@ function createAuth({ db, cfg, limiters }) {
     username: row.username,
     balance: row.balance,
     dailyInMs: Math.max(0, row.daily_at + DAY - Date.now()),
+    admin: isAdminName(row.username),
   });
 
   function startSession(res, userId) {
@@ -84,13 +87,17 @@ function createAuth({ db, cfg, limiters }) {
     if (t && /^[A-Za-z0-9_-]{43}$/.test(t)) {
       const row = q.session.get(sha256(t));
       if (row) {
-        if (row.exp > Date.now()) { req.user = row; req.sid = row.sid; } else q.delSession.run(row.sid);
+        if (row.exp > Date.now()) { req.user = { ...row, isAdmin: isAdminName(row.username) }; req.sid = row.sid; } else q.delSession.run(row.sid);
       }
     }
     next();
   };
   const requireAuth = (req, res, next) =>
     req.user ? next() : next(new HttpError(401, 'unauthorized', 'Увійди в акаунт'));
+
+  // Non-admins get the same 404 as for any unknown path, so the panel's API is not advertised.
+  const requireAdmin = (req, res, next) =>
+    req.user && req.user.isAdmin ? next() : next(new HttpError(404, 'not_found', 'Не знайдено'));
 
   // Hash against which unknown usernames are checked, so login time doesn't reveal if a nick exists.
   let dummyHash;
@@ -154,7 +161,7 @@ function createAuth({ db, cfg, limiters }) {
   }));
 
   const cleanup = () => db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
-  return { router, loadUser, requireAuth, cleanup };
+  return { router, loadUser, requireAuth, requireAdmin, cleanup };
 }
 
 module.exports = { createAuth, hashPassword, verifyPassword, DAY };
