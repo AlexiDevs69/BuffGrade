@@ -31,6 +31,15 @@ const SOURCES = [
 ];
 // Only these hosts may appear as image URLs (also matches the CSP). Anything else is dropped.
 const IMG_HOSTS = ['raw.githubusercontent.com', 'steamstatic.com', 'akamaihd.net'];
+const HOST_RE = /^(?=.{4,100}$)([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
+// Extra hosts (EXTRA_IMG_HOSTS) let the admin use images from e.g. imgur; the same list is added to the CSP in index.js.
+function allowImageHosts(list) {
+  for (const h of list || []) {
+    const x = String(h).trim().toLowerCase();
+    if (!HOST_RE.test(x)) throw new Error('Bad image host: ' + h);
+    if (!IMG_HOSTS.includes(x)) IMG_HOSTS.push(x);
+  }
+}
 
 const CATEGORIES = [
   { id: 'rifle', name: 'Гвинтівки' }, { id: 'sniper', name: 'Снайперські гвинтівки' }, { id: 'pistol', name: 'Пістолети' },
@@ -59,8 +68,10 @@ function hv(s) {
   for (const ch of s) x = (Math.imul(x, 31) + ch.charCodeAt(0)) >>> 0;
   return 0.6 + (x % 1000) / 1000;
 }
+// Custom (admin-made) items carry `fixed`, the price of the Field-Tested non-StatTrak version; catalog items use the formula.
 const itemPrice = (it, wear, st) =>
-  Math.max(1, Math.round(BASE[it.tier] * hv(it.name) * wear.m * (st ? ST_MULT : 1)));
+  Math.max(1, Math.round((it.fixed != null ? it.fixed : BASE[it.tier] * hv(it.name)) * wear.m * (st ? ST_MULT : 1)));
+const wearForFloat = (f) => WEAR.find((w) => f < w.hi) || WEAR[WEAR.length - 1];
 const targetPrice = (it) => itemPrice(it, FT, false);
 const marketPrice = (it, wear, st) => Math.ceil(itemPrice(it, wear, st) * MARKET_MARKUP); // ceil: buying is always dearer than selling back
 
@@ -139,11 +150,58 @@ function buildCatalog(crates) {
     }
   }
 
-  // Terminals are the newest container format, so they come first; inside each group the newest release leads.
-  const list = [...cases.values()].sort((a, b) => (b.kind === 'terminal') - (a.kind === 'terminal') || b.firstSale - a.firstSale || (a.name < b.name ? -1 : 1));
-  const summaries = list.map(({ id, name, kind, image, price }) => ({ id, name, kind, image, price }));
   const targets = [...items.values()].sort((a, b) => a.price - b.price);
-  return { cases, items, itemList: [...items.values()], list, summaries, targets };
+  const cat = { cases, items, itemList: [...items.values()], list: [], summaries: [], targets, customItems: new Map() };
+  refreshLists(cat);
+  return cat;
+}
+
+// Admin-made cases come first (newest first). Then terminals, the newest container format; inside each group the newest release leads.
+function refreshLists(cat) {
+  cat.list = [...cat.cases.values()].sort((a, b) =>
+    (!!b.custom - !!a.custom) || (a.custom ? b.createdAt - a.createdAt : 0) ||
+    (b.kind === 'terminal') - (a.kind === 'terminal') || b.firstSale - a.firstSale || (a.name < b.name ? -1 : 1));
+  cat.summaries = cat.list.map(({ id, name, kind, image, price }) => ({ id, name, kind, image, price }));
+}
+
+/* ---------- admin-made content (persisted by server/admin.js) ---------- */
+const pct = (x) => Math.round(x * 10000) / 100;
+
+function addCustomItem(cat, d) {
+  const it = { key: d.key, name: d.name, image: d.image, tier: d.tier, fixed: d.price, canST: !!d.canST, lname: d.name.toLowerCase(), custom: true };
+  cat.customItems.set(it.key, it);
+  return it;
+}
+function removeCustomItem(cat, key) { return cat.customItems.delete(key); }
+
+// d.items: self-contained snapshots {key, name, image, tier, fixed?, canST, w}, so deleting a custom item never breaks a case.
+function addCustomCase(cat, d) {
+  const total = d.items.reduce((a, i) => a + i.w, 0);
+  const pool = d.items.map((i) => ({
+    item: { key: i.key, name: i.name, image: i.image, tier: i.tier, canST: !!i.canST, ...(i.fixed != null ? { fixed: i.fixed } : {}) },
+    w: i.w,
+  }));
+  const byTier = {}, odds = {};
+  for (const p of pool) (byTier[p.item.tier] ||= []).push(p.item);
+  const tiers = TIERS.filter((t) => byTier[t]);
+  for (const t of tiers) odds[t] = pct(pool.filter((p) => p.item.tier === t).reduce((a, p) => a + p.w, 0) / total);
+  const c = {
+    id: d.id, name: d.name, kind: 'case', image: d.image, price: d.price, custom: true, createdAt: d.createdAt, firstSale: 0,
+    items: pool.map((p) => ({ key: p.item.key, name: p.item.name, image: p.item.image, tier: p.item.tier, chance: pct(p.w / total) })),
+    byTier, tiers, odds, pool, poolTotal: total,
+  };
+  cat.cases.set(c.id, c);
+  for (const p of pool) { const e = cat.items.get(p.item.key); if (e) e.caseIds.add(c.id); } // so the market's "case" filter works
+  refreshLists(cat);
+  return c;
+}
+function removeCustomCase(cat, id) {
+  const c = cat.cases.get(id);
+  if (!c || !c.custom) return false;
+  cat.cases.delete(id);
+  for (const e of cat.items.values()) e.caseIds.delete(id);
+  refreshLists(cat);
+  return true;
 }
 
 function makeInstance(item, wear, forceSt) {
@@ -151,7 +209,8 @@ function makeInstance(item, wear, forceSt) {
     let r = randInt(100);
     wear = WEAR.find((w) => (r -= w.p) < 0) || FT;
   }
-  const st = forceSt !== undefined ? forceSt : canStatTrak(item.name) && randInt(ST_CHANCE_1_IN) === 0;
+  const canST = item.canST !== undefined ? item.canST : canStatTrak(item.name);
+  const st = forceSt !== undefined ? forceSt : canST && randInt(ST_CHANCE_1_IN) === 0;
   const wf = +(wear.lo + (randInt(1000000) / 1000000) * (wear.hi - wear.lo)).toFixed(4);
   return {
     key: item.key, name: item.name, image: item.image, tier: item.tier,
@@ -160,6 +219,11 @@ function makeInstance(item, wear, forceSt) {
 }
 
 function rollDrop(c) {
+  if (c.pool) { // admin-made case: per-item weights, still CSPRNG
+    let w = randInt(c.poolTotal);
+    for (const p of c.pool) { if (w < p.w) return makeInstance(p.item); w -= p.w; }
+    return makeInstance(c.pool[c.pool.length - 1].item);
+  }
   let r = randInt(c.tiers.reduce((a, t) => a + ODDS_BP[t], 0));
   let tier = c.tiers[c.tiers.length - 1];
   for (const t of c.tiers) {
@@ -197,4 +261,9 @@ async function loadCatalog({ cacheFile, log = console } = {}) {
   return cat;
 }
 
-module.exports = { buildCatalog, loadCatalog, rollDrop, makeInstance, targetPrice, itemPrice, marketPrice, categoryOf, randInt, WEAR, FT, TIERS, CATEGORIES, MARKET_MARKUP };
+const imageHosts = () => [...IMG_HOSTS];
+
+module.exports = {
+  buildCatalog, loadCatalog, rollDrop, makeInstance, targetPrice, itemPrice, marketPrice, categoryOf, randInt, WEAR, FT, TIERS, CATEGORIES, MARKET_MARKUP,
+  safeImage, allowImageHosts, imageHosts, wearForFloat, addCustomItem, removeCustomItem, addCustomCase, removeCustomCase, refreshLists,
+};
