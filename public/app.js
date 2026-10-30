@@ -36,6 +36,7 @@ function setMe(u) {
   if (u) { state.dailyAt = Date.now() + u.dailyInMs; $('#bal').textContent = fmt(u.balance); $('#who').textContent = u.username; }
   else { state.inv = []; }
   $('#wallet').hidden = !u; $('#who').hidden = !u; $('#login').hidden = !!u; $('#logout').hidden = !u;
+  $('#adminlink').hidden = !(u && u.admin); // only a hint: the server still checks every /api/admin call
   dailyState();
 }
 function setBal(b) { if (state.me) { state.me.balance = b; $('#bal').textContent = fmt(b); } }
@@ -97,6 +98,7 @@ function cell(it) {
   const d = document.createElement('div'); d.className = 'item'; d.style.setProperty('--c', COLORS[it.tier]);
   if (it.image) { const im = document.createElement('img'); im.src = it.image; im.alt = ''; im.loading = 'lazy'; d.append(im); }
   const s = document.createElement('span'); s.textContent = it.name; d.append(s);
+  if (it.chance !== undefined) d.title = it.name + ' — шанс ' + it.chance + '%';
   return d;
 }
 function icard(it, extra, sub) {
@@ -146,7 +148,7 @@ function show(v) {
   document.querySelectorAll('nav [data-go]').forEach((b) => b.classList.toggle('on', b.dataset.go === v || (v === 'case' && b.dataset.go === 'home')));
   if (v === 'prof') renderProfile();
   if (v === 'market') renderMarket();
-  if (v === 'up') renderUp();
+  if (v === 'up') openUp();
   scrollTo(0, 0);
 }
 function refreshView() { if (view === 'prof') renderProfile(); if (view === 'up') renderUp(); }
@@ -522,6 +524,12 @@ function setWheel(ch) {
   $('#upgo').disabled = !ch || upBusy;
 }
 function emptyMsg(el, text) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = text; el.replaceChildren(p); }
+// The cached inventory can be stale (cases opened, items bought or sold since the last load), so entering the tab reloads it first.
+async function openUp() {
+  emptyMsg($('#uplist'), 'Завантажуємо інвентар…');
+  await loadInv();
+  if (view === 'up') renderUp();
+}
 async function renderUp() {
   for (const id of [...upSel]) if (!state.inv.some((i) => i.id === id)) upSel.delete(id);
   const L = $('#uplist'); L.replaceChildren();
