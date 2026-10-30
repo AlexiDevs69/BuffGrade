@@ -10,7 +10,10 @@ function crate(id) {
   return {
     id, type: 'Case', name: 'Case ' + id, image: img(id), first_sale_date: '2020-01-01',
     contains: [0, 1, 2].map((i) => mk('Mil-Spec Grade', i)).concat([0, 1].map((i) => mk('Restricted', i)), [mk('Classified', 0), mk('Covert', 0)]),
-    contains_rare: [{ id: id + '-knife', name: '★ Knife ' + id, rarity: { name: 'Extraordinary' }, image: img(id + 'k') }],
+    contains_rare: [
+      { id: id + '-knife', name: '★ Knife ' + id, rarity: { name: 'Extraordinary' }, image: img(id + 'k') },
+      { id: id + '-glove', name: '★ Sport Gloves | G' + id, rarity: { name: 'Extraordinary' }, image: img(id + 'g') },
+    ],
   };
 }
 const FIXTURE = [
