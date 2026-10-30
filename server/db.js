@@ -60,6 +60,23 @@ function openDb(file) {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS history_user ON history(user_id, id);
+    CREATE TABLE IF NOT EXISTS custom_items(        -- skins invented in the admin panel
+      key TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      image TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      price INTEGER NOT NULL CHECK(price > 0),      -- price of the Field-Tested, non-StatTrak version
+      can_st INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS custom_cases(        -- cases built in the admin panel
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      image TEXT NOT NULL,
+      price INTEGER NOT NULL CHECK(price >= 0),
+      items TEXT NOT NULL,                          -- JSON: self-contained item snapshots with weights
+      created_at INTEGER NOT NULL
+    );
   `);
   // Migration for databases created before profiles existed.
   const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
