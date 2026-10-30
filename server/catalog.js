@@ -17,7 +17,13 @@ const WEAR = [
 const FT = WEAR[2];
 const ST_MULT = 1.8;
 const ST_CHANCE_1_IN = 10;
+const MARKET_MARKUP = 1.2; // market buy price = value x 1.2 (rounded UP), selling pays the plain value
 const CASE_MARGIN = 1.3; // case price = 1.3 x expected value, so the economy always drains a little
+
+// The API has no release date for terminals; Dead Hand came out on 2026-03-11 (confirmed by several sources).
+const RELEASE_OVERRIDES = new Map([['dead hand terminal', Date.parse('2026-03-11')]]);
+// Terminals arrive with `type: null`, as do gift packages, so they are recognised by name, never by "type is empty".
+const isTerminal = (c) => c && c.type == null && typeof c.name === 'string' && /\bTerminal$/i.test(c.name.trim());
 
 const SOURCES = [
   'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/crates.json',
@@ -25,6 +31,26 @@ const SOURCES = [
 ];
 // Only these hosts may appear as image URLs (also matches the CSP). Anything else is dropped.
 const IMG_HOSTS = ['raw.githubusercontent.com', 'steamstatic.com', 'akamaihd.net'];
+
+const CATEGORIES = [
+  { id: 'rifle', name: 'Гвинтівки' }, { id: 'sniper', name: 'Снайперські гвинтівки' }, { id: 'pistol', name: 'Пістолети' },
+  { id: 'smg', name: 'Пістолети-кулемети' }, { id: 'heavy', name: 'Важка зброя' }, { id: 'knife', name: 'Ножі' },
+  { id: 'gloves', name: 'Рукавички' }, { id: 'other', name: 'Інше' },
+];
+const WEAPON_CAT = new Map();
+for (const [cat, list] of Object.entries({
+  rifle: ['AK-47', 'M4A4', 'M4A1-S', 'Galil AR', 'FAMAS', 'SG 553', 'AUG'],
+  sniper: ['AWP', 'SSG 08', 'SCAR-20', 'G3SG1'],
+  pistol: ['Glock-18', 'USP-S', 'P2000', 'P250', 'Five-SeveN', 'Tec-9', 'CZ75-Auto', 'Desert Eagle', 'R8 Revolver', 'Dual Berettas'],
+  smg: ['MP9', 'MAC-10', 'MP7', 'MP5-SD', 'UMP-45', 'P90', 'PP-Bizon'],
+  heavy: ['Nova', 'XM1014', 'MAG-7', 'Sawed-Off', 'M249', 'Negev'],
+})) for (const w of list) WEAPON_CAT.set(w.toLowerCase(), cat);
+function categoryOf(name) {
+  if (/gloves|wraps/i.test(name)) return 'gloves';
+  if (name.startsWith('★')) return 'knife';
+  return WEAPON_CAT.get(name.split(' | ')[0].replace(/^StatTrak™\s*/, '').toLowerCase()) || 'other';
+}
+const canStatTrak = (name) => !/gloves|wraps/i.test(name);
 
 const randInt = (n) => crypto.randomInt(n); // CSPRNG, never Math.random for game outcomes
 
@@ -36,6 +62,7 @@ function hv(s) {
 const itemPrice = (it, wear, st) =>
   Math.max(1, Math.round(BASE[it.tier] * hv(it.name) * wear.m * (st ? ST_MULT : 1)));
 const targetPrice = (it) => itemPrice(it, FT, false);
+const marketPrice = (it, wear, st) => Math.ceil(itemPrice(it, wear, st) * MARKET_MARKUP); // ceil: buying is always dearer than selling back
 
 function tierOf(rarityName) {
   const r = String(rarityName || '').toLowerCase();
@@ -63,7 +90,9 @@ function buildCatalog(crates) {
   const stFactor = 1 + (ST_MULT - 1) / ST_CHANCE_1_IN;
 
   for (const c of Array.isArray(crates) ? crates : []) {
-    if (!c || c.type !== 'Case' || typeof c.id !== 'string' || typeof c.name !== 'string') continue;
+    const terminal = isTerminal(c);
+    if (!c || (c.type !== 'Case' && !terminal) || typeof c.id !== 'string' || typeof c.name !== 'string') continue;
+    const name = c.name.replace(/^Sealed\s+/i, '').slice(0, 120);
     const image = safeImage(c.image);
     if (!image) continue;
     const list = [];
@@ -97,24 +126,32 @@ function buildCatalog(crates) {
     for (const t of tiers) odds[t] = Math.round((ODDS_BP[t] / total) * 10000) / 100;
 
     cases.set(c.id, {
-      id: c.id, name: c.name.slice(0, 120), image, price, items: list, byTier, tiers, odds,
-      firstSale: Date.parse(c.first_sale_date) || 0,
+      id: c.id, name, kind: terminal ? 'terminal' : 'case', image, price, items: list, byTier, tiers, odds,
+      firstSale: Date.parse(c.first_sale_date) || RELEASE_OVERRIDES.get(name.toLowerCase()) || 0,
     });
-    for (const it of list) if (!items.has(it.key)) items.set(it.key, { ...it, price: targetPrice(it) });
+    for (const it of list) {
+      let e = items.get(it.key);
+      if (!e) {
+        e = { ...it, price: targetPrice(it), category: categoryOf(it.name), canST: canStatTrak(it.name), lname: it.name.toLowerCase(), caseIds: new Set() };
+        items.set(it.key, e);
+      }
+      e.caseIds.add(c.id);
+    }
   }
 
-  const list = [...cases.values()].sort((a, b) => b.firstSale - a.firstSale);
-  const summaries = list.map(({ id, name, image, price }) => ({ id, name, image, price }));
+  // Terminals are the newest container format, so they come first; inside each group the newest release leads.
+  const list = [...cases.values()].sort((a, b) => (b.kind === 'terminal') - (a.kind === 'terminal') || b.firstSale - a.firstSale || (a.name < b.name ? -1 : 1));
+  const summaries = list.map(({ id, name, kind, image, price }) => ({ id, name, kind, image, price }));
   const targets = [...items.values()].sort((a, b) => a.price - b.price);
-  return { cases, items, list, summaries, targets };
+  return { cases, items, itemList: [...items.values()], list, summaries, targets };
 }
 
-function makeInstance(item, wear) {
+function makeInstance(item, wear, forceSt) {
   if (!wear) {
     let r = randInt(100);
     wear = WEAR.find((w) => (r -= w.p) < 0) || FT;
   }
-  const st = !/gloves|wraps/i.test(item.name) && randInt(ST_CHANCE_1_IN) === 0;
+  const st = forceSt !== undefined ? forceSt : canStatTrak(item.name) && randInt(ST_CHANCE_1_IN) === 0;
   const wf = +(wear.lo + (randInt(1000000) / 1000000) * (wear.hi - wear.lo)).toFixed(4);
   return {
     key: item.key, name: item.name, image: item.image, tier: item.tier,
@@ -160,4 +197,4 @@ async function loadCatalog({ cacheFile, log = console } = {}) {
   return cat;
 }
 
-module.exports = { buildCatalog, loadCatalog, rollDrop, makeInstance, targetPrice, itemPrice, randInt, WEAR, FT, TIERS };
+module.exports = { buildCatalog, loadCatalog, rollDrop, makeInstance, targetPrice, itemPrice, marketPrice, categoryOf, randInt, WEAR, FT, TIERS, CATEGORIES, MARKET_MARKUP };
