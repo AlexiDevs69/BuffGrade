@@ -7,6 +7,7 @@ const { DAY } = require('./auth');
 
 const MAX_UP_ITEMS = 10;
 const MAX_SELL = 100;
+const MAX_OPEN = 10; // cases per request
 const MAX_HISTORY = 500; // per user; older rows are pruned (best drop is stored separately, so it is never lost)
 const MIN_CHANCE_PPM = 10000;  // 1%: below this the upgrade is refused (never clamped upwards, that would be an exploit)
 const MAX_CHANCE_PPM = 900000; // 90%
@@ -56,17 +57,25 @@ function createGame({ db, catalog, cfg, limiters, requireAuth }) {
   const inList = (ids) => ids.map(() => '?').join(',');
 
   // Every money-moving operation is ONE immediate transaction: check + debit + result + audit, all or nothing.
-  const openTx = db.transaction((uid, c, now) => {
-    if (q.debit.run(c.price, uid, c.price).changes !== 1) throw new HttpError(402, 'insufficient_funds', 'Не вистачає монет');
-    const drop = rollDrop(c);
-    const id = insert(uid, drop, now);
+  const openTx = db.transaction((uid, c, count, now) => {
+    const total = c.price * count;
+    if (q.debit.run(total, uid, total).changes !== 1) throw new HttpError(402, 'insufficient_funds', 'Не вистачає монет');
+    const from = { id: c.id, name: c.name, image: c.image };
+    let bestPrice = q.bestPrice.get(uid).best_price, best = null;
+    const items = [];
+    for (let i = 0; i < count; i++) {
+      const drop = rollDrop(c);
+      const id = insert(uid, drop, now);
+      const snap = snapDrop(drop);
+      q.insHist.run(uid, 'case', JSON.stringify({ case: from, item: snap }), now);
+      if (drop.price > bestPrice) { bestPrice = drop.price; best = { ...snap, case: from, at: now }; }
+      items.push(itemView(q.item.get(id)));
+    }
+    if (best) q.setBest.run(JSON.stringify(best), bestPrice, uid);
     const after = bal(uid);
-    q.ledger.run(uid, 'case_open', -c.price, after, JSON.stringify({ case: c.id, item: id, price: drop.price }), now);
-    const snap = snapDrop(drop), from = { id: c.id, name: c.name, image: c.image };
-    q.insHist.run(uid, 'case', JSON.stringify({ case: from, item: snap }), now);
-    if (drop.price > q.bestPrice.get(uid).best_price) q.setBest.run(JSON.stringify({ ...snap, case: from, at: now }), drop.price, uid);
+    q.ledger.run(uid, 'case_open', -total, after, JSON.stringify({ case: c.id, count, items: items.map((i) => i.id), value: items.reduce((a, i) => a + i.price, 0) }), now);
     q.pruneHist.run(uid, uid);
-    return { item: itemView(q.item.get(id)), balance: after };
+    return { items, item: items[0], balance: after }; // `item` = first drop, kept for single-open clients
   });
 
   const sellTx = db.transaction((uid, ids, now) => {
@@ -126,7 +135,7 @@ function createGame({ db, catalog, cfg, limiters, requireAuth }) {
     const c = catalog.cases.get(String(req.params.id));
     if (!c) throw new HttpError(404, 'case_not_found', 'Кейс не знайдено');
     res.json({
-      id: c.id, name: c.name, image: c.image, price: c.price, odds: c.odds,
+      id: c.id, name: c.name, kind: c.kind, image: c.image, price: c.price, odds: c.odds,
       items: c.items.map(({ key, name, image, tier }) => ({ key, name, image, tier })),
     });
   });
@@ -137,7 +146,9 @@ function createGame({ db, catalog, cfg, limiters, requireAuth }) {
   r.post('/cases/:id/open', guard, ah(async (req, res) => {
     const c = catalog.cases.get(String(req.params.id));
     if (!c) throw new HttpError(404, 'case_not_found', 'Кейс не знайдено');
-    res.json(openTx.immediate(req.user.id, c, Date.now())); // price comes from the server catalog, never from the client
+    const count = bodyOf(req).count === undefined ? 1 : bodyOf(req).count;
+    if (!Number.isInteger(count) || count < 1 || count > MAX_OPEN) throw bad('Кількість кейсів: від 1 до ' + MAX_OPEN);
+    res.json(openTx.immediate(req.user.id, c, count, Date.now())); // price comes from the server catalog, never from the client
   }));
 
   r.get('/inventory', guard, (req, res) => {
