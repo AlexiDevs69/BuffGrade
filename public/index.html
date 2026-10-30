@@ -17,6 +17,7 @@
     <a href="#" data-go="home" class="logo" aria-label="BuffGrade, на головну"><i></i>BuffGrade</a>
     <nav aria-label="Основне меню">
       <button data-go="home" class="on">Кейси</button>
+      <button data-go="market">Ринок</button>
       <button data-go="prof">Профіль</button>
       <button data-go="up">Апгрейдер</button>
       <button data-soon="Бої кейсів">Бої</button>
@@ -69,9 +70,13 @@
   <button class="btn btn-ghost back" data-go="home">Назад до кейсів</button>
   <div class="chead">
     <div class="art" id="cimg"></div>
-    <div><h2 id="cname"></h2><div class="price" id="cprice"></div><button class="btn btn-main" id="copen">Відкрити</button></div>
+    <div><h2 id="cname"></h2><div class="price" id="cprice"></div><div class="ctl">
+        <div class="seg sm" id="cnt" role="group" aria-label="Кількість кейсів"><button data-n="1" class="on">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="5">5</button><button data-n="10">10</button></div>
+        <div class="seg sm" id="spd" role="group" aria-label="Швидкість"><button data-s="normal" class="on">Звичайно</button><button data-s="fast">Швидко</button><button data-s="instant">Миттєво</button></div>
+      </div>
+      <button class="btn btn-main" id="copen">Відкрити</button></div>
   </div>
-  <div class="reel"><div class="pointer"></div><div class="track" id="ctrack"></div></div>
+  <div class="reels" id="creels" aria-hidden="true"></div>
   <div id="cres" aria-live="polite"></div>
   <div id="cpool"></div>
 </div>
@@ -98,6 +103,61 @@
   <div id="p-hist" hidden>
     <div class="hlist" id="hlist"></div>
     <button class="btn btn-ghost" id="hmore" hidden style="margin-top:14px">Показати ще</button>
+  </div>
+</div>
+
+<div class="wrap view" id="v-market" hidden>
+  <div class="head" style="margin-top:32px"><h2>Ринок</h2><p>Купуй будь-який скін за віртуальні монети. Купівля дорожча за продаж на 20%</p></div>
+  <div class="mlayout">
+    <details class="mfilters" id="mfdet" open>
+      <summary>Фільтри</summary>
+      <div class="fbody" id="mfilters">
+        <label class="f">Пошук<input id="mq" type="search" maxlength="60" placeholder="AK-47, Karambit…" autocomplete="off"></label>
+        <fieldset><legend>Тип</legend>
+          <label><input type="radio" name="mcat" value="" checked> Усі типи</label>
+          <label><input type="radio" name="mcat" value="rifle"> Гвинтівки</label>
+          <label><input type="radio" name="mcat" value="sniper"> Снайперські гвинтівки</label>
+          <label><input type="radio" name="mcat" value="pistol"> Пістолети</label>
+          <label><input type="radio" name="mcat" value="smg"> Пістолети-кулемети</label>
+          <label><input type="radio" name="mcat" value="heavy"> Важка зброя</label>
+          <label><input type="radio" name="mcat" value="knife"> Ножі</label>
+          <label><input type="radio" name="mcat" value="gloves"> Рукавички</label>
+          <label><input type="radio" name="mcat" value="other"> Інше</label>
+        </fieldset>
+        <fieldset><legend>Рідкість</legend>
+          <label><input type="checkbox" name="mtier" value="mil"> <span class="dot" style="--c:#4b69ff"></span> Армійське</label>
+          <label><input type="checkbox" name="mtier" value="res"> <span class="dot" style="--c:#8847ff"></span> Обмежене</label>
+          <label><input type="checkbox" name="mtier" value="cls"> <span class="dot" style="--c:#d32ce6"></span> Засекречене</label>
+          <label><input type="checkbox" name="mtier" value="cov"> <span class="dot" style="--c:#eb4b4b"></span> Таємне</label>
+          <label><input type="checkbox" name="mtier" value="rare"> <span class="dot" style="--c:#ffd24a"></span> Рідкісне</label>
+        </fieldset>
+        <fieldset><legend>Знос</legend>
+          <label><input type="checkbox" name="mwear" value="FN"> FN</label>
+          <label><input type="checkbox" name="mwear" value="MW"> MW</label>
+          <label><input type="checkbox" name="mwear" value="FT"> FT</label>
+          <label><input type="checkbox" name="mwear" value="WW"> WW</label>
+          <label><input type="checkbox" name="mwear" value="BS"> BS</label>
+        </fieldset>
+        <fieldset><legend>StatTrak</legend>
+          <label><input type="radio" name="mst" value="any" checked> Будь-який</label>
+          <label><input type="radio" name="mst" value="yes"> Лише StatTrak</label>
+          <label><input type="radio" name="mst" value="no"> Без StatTrak</label>
+        </fieldset>
+        <fieldset><legend>Ціна</legend>
+          <div class="range"><input id="mmin" type="number" min="0" placeholder="від" aria-label="Ціна від"><input id="mmax" type="number" min="0" placeholder="до" aria-label="Ціна до"></div>
+        </fieldset>
+        <label class="f">Кейс<select id="mcase"><option value="">Усі кейси</option></select></label>
+        <button class="btn btn-ghost" id="mreset" type="button">Скинути фільтри</button>
+      </div>
+    </details>
+    <div class="mmain">
+      <div class="tools">
+        <span id="mcount"></span>
+        <select id="msort" class="sp-right" aria-label="Сортування"><option value="price_asc">Спочатку дешевші</option><option value="price_desc">Спочатку дорожчі</option><option value="name">За назвою</option></select>
+      </div>
+      <div class="mgrid" id="mgrid"></div>
+      <div class="pager"><button class="btn btn-ghost" id="mprev" disabled>Назад</button><span id="mpage"></span><button class="btn btn-ghost" id="mnext" disabled>Далі</button></div>
+    </div>
   </div>
 </div>
 
