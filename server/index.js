@@ -4,10 +4,11 @@ const express = require('express');
 const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { openDb } = require('./db');
-const { loadCatalog } = require('./catalog');
+const { loadCatalog, allowImageHosts } = require('./catalog');
 const { createAuth, hashPassword } = require('./auth');
 const { createGame } = require('./game');
 const { createProfile } = require('./profile');
+const { createAdmin } = require('./admin');
 const { createMarket } = require('./market');
 const { HttpError, bodyOf } = require('./util');
 
@@ -21,6 +22,8 @@ function loadConfig(env = process.env) {
     dbPath: env.DB_PATH || path.join(__dirname, '..', 'data', 'buffgrade.db'),
     cacheFile: env.CATALOG_CACHE || path.join(__dirname, '..', 'data', 'crates.json'),
     scryptN: Number(env.SCRYPT_N) || 65536,
+    admins: new Set((env.ADMIN_USERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)), // nicks that may use /admin.html
+    imgHosts: (env.EXTRA_IMG_HOSTS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean), // extra image hosts for admin-made skins/cases
     startBalance: 1000,
     dailyBonus: 500,
     limits: {
@@ -74,6 +77,7 @@ function csrfGuard(cfg) {
 
 async function createApp({ db, catalog, config: cfg }) {
   const limiters = makeLimiters(cfg);
+  allowImageHosts(cfg.imgHosts);
   const auth = createAuth({ db, cfg, limiters });
   const app = express();
   app.disable('x-powered-by');
@@ -88,7 +92,8 @@ async function createApp({ db, catalog, config: cfg }) {
         styleSrc: ["'self'", 'https://fonts.googleapis.com'],
         styleSrcAttr: ["'unsafe-inline'"],
         fontSrc: ['https://fonts.gstatic.com'],
-        imgSrc: ["'self'", 'data:', 'https://raw.githubusercontent.com', 'https://*.steamstatic.com', 'https://*.akamaihd.net'],
+        imgSrc: ["'self'", 'data:', 'https://raw.githubusercontent.com', 'https://*.steamstatic.com', 'https://*.akamaihd.net',
+          ...(cfg.imgHosts || []).flatMap((h) => ['https://' + h, 'https://*.' + h])],
         connectSrc: ["'self'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
@@ -112,6 +117,7 @@ async function createApp({ db, catalog, config: cfg }) {
   app.use('/api', createGame({ db, catalog, cfg, limiters, requireAuth: auth.requireAuth }));
   app.use('/api', createMarket({ db, catalog, limiters, requireAuth: auth.requireAuth }));
   app.use('/api', createProfile({ db, catalog, limiters, requireAuth: auth.requireAuth }));
+  app.use('/api', createAdmin({ db, catalog, limiters, requireAuth: auth.requireAuth, requireAdmin: auth.requireAdmin }));
   app.use('/api', (req, res, next) => next(new HttpError(404, 'not_found', 'Не знайдено')));
 
   // eslint-disable-next-line no-unused-vars
