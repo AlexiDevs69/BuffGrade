@@ -2,6 +2,7 @@
 const crypto = require('node:crypto');
 const express = require('express');
 const { HttpError, ah, bodyOf, readCookie } = require('./util');
+const { addLedger, UNIQUE_VIOLATION } = require('./db');
 
 const DAY = 24 * 3600 * 1000;
 const SESSION_TTL = 30 * DAY;
@@ -52,18 +53,12 @@ function createAuth({ db, cfg, limiters }) {
   const isAdminName = (name) => admins.has(String(name).toLowerCase());
   const cookieOpts = { httpOnly: true, secure: cfg.isProd, sameSite: 'lax', path: '/' };
 
-  const q = {
-    session: db.prepare(`SELECT s.id sid, s.expires_at exp, u.id, u.username, u.balance, u.daily_at
-                         FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?`),
-    delSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
-    delUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ?'),
-    insSession: db.prepare('INSERT INTO sessions(id, user_id, created_at, expires_at) VALUES(?,?,?,?)'),
-    capSessions: db.prepare(`DELETE FROM sessions WHERE user_id = ? AND id NOT IN
-                             (SELECT id FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ${MAX_SESSIONS})`),
-    userByName: db.prepare('SELECT id, pass_hash FROM users WHERE username = ?'),
-    insUser: db.prepare('INSERT INTO users(username, pass_hash, balance, created_at) VALUES(?,?,?,?)'),
-    ledger: db.prepare('INSERT INTO ledger(user_id, kind, delta, balance_after, meta, created_at) VALUES(?,?,?,?,?,?)'),
-    fresh: db.prepare('SELECT username, balance, daily_at FROM users WHERE id = ?'),
+  const SQL = {
+    session: `SELECT s.id AS sid, s.expires_at AS exp, u.id, u.username, u.balance, u.daily_at
+              FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $1`,
+    capSessions: `DELETE FROM sessions WHERE user_id = $1 AND id NOT IN
+                  (SELECT id FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT ${MAX_SESSIONS})`,
+    fresh: 'SELECT username, balance, daily_at FROM users WHERE id = $1',
   };
 
   const userView = (row) => ({
@@ -73,25 +68,26 @@ function createAuth({ db, cfg, limiters }) {
     admin: isAdminName(row.username),
   });
 
-  function startSession(res, userId) {
+  async function startSession(res, userId) {
     const token = crypto.randomBytes(32).toString('base64url'); // 256 bits; only its hash is stored
     const now = Date.now();
-    q.insSession.run(sha256(token), userId, now, now + SESSION_TTL);
-    q.capSessions.run(userId, userId);
+    await db.run('INSERT INTO sessions(id, user_id, created_at, expires_at) VALUES($1,$2,$3,$4)', [sha256(token), userId, now, now + SESSION_TTL]);
+    await db.run(SQL.capSessions, [userId]);
     res.cookie(COOKIE, token, { ...cookieOpts, maxAge: SESSION_TTL });
   }
 
-  const loadUser = (req, res, next) => {
+  const loadUser = ah(async (req, res, next) => {
     req.user = null;
     const t = readCookie(req, COOKIE);
     if (t && /^[A-Za-z0-9_-]{43}$/.test(t)) {
-      const row = q.session.get(sha256(t));
+      const row = await db.get(SQL.session, [sha256(t)]);
       if (row) {
-        if (row.exp > Date.now()) { req.user = { ...row, isAdmin: isAdminName(row.username) }; req.sid = row.sid; } else q.delSession.run(row.sid);
+        if (row.exp > Date.now()) { req.user = { ...row, isAdmin: isAdminName(row.username) }; req.sid = row.sid; }
+        else await db.run('DELETE FROM sessions WHERE id = $1', [row.sid]);
       }
     }
     next();
-  };
+  });
   const requireAuth = (req, res, next) =>
     req.user ? next() : next(new HttpError(401, 'unauthorized', 'Увійди в акаунт'));
 
@@ -113,54 +109,55 @@ function createAuth({ db, cfg, limiters }) {
     const now = Date.now();
     let id;
     try {
-      id = db.transaction(() => {
-        const r = q.insUser.run(username, hash, cfg.startBalance, now);
-        q.ledger.run(r.lastInsertRowid, 'signup', cfg.startBalance, cfg.startBalance, null, now);
-        return r.lastInsertRowid;
-      })();
+      id = await db.tx(async (t) => {
+        const u = await t.get('INSERT INTO users(username, pass_hash, balance, created_at) VALUES($1,$2,$3,$4) RETURNING id',
+          [username, hash, cfg.startBalance, now]);
+        await addLedger(t, u.id, 'signup', cfg.startBalance, cfg.startBalance, null, now);
+        return u.id;
+      });
     } catch (e) {
-      if (String(e.code).startsWith('SQLITE_CONSTRAINT')) throw new HttpError(409, 'username_taken', 'Цей нік уже зайнятий');
+      if (e.code === UNIQUE_VIOLATION) throw new HttpError(409, 'username_taken', 'Цей нік уже зайнятий');
       throw e;
     }
-    startSession(res, id);
-    res.status(201).json({ user: userView(q.fresh.get(id)) });
+    await startSession(res, id);
+    res.status(201).json({ user: userView(await db.get(SQL.fresh, [id])) });
   }));
 
   router.post('/login', limiters.loginIp, limiters.login, ah(async (req, res) => {
     const b = bodyOf(req);
     const username = typeof b.username === 'string' ? b.username.trim().slice(0, 64) : '';
     const password = typeof b.password === 'string' && b.password.length <= 128 ? b.password : '';
-    const row = q.userByName.get(username);
+    const row = await db.get('SELECT id, pass_hash FROM users WHERE lower(username) = lower($1)', [username]);
     const ok = await verifyPassword(password, row ? row.pass_hash : await getDummy());
     if (!row || !ok) throw new HttpError(401, 'bad_credentials', 'Невірний нік або пароль');
-    startSession(res, row.id);
-    res.json({ user: userView(q.fresh.get(row.id)) });
+    await startSession(res, row.id);
+    res.json({ user: userView(await db.get(SQL.fresh, [row.id])) });
   }));
 
-  router.post('/logout', (req, res) => {
-    if (req.sid) q.delSession.run(req.sid);
+  router.post('/logout', ah(async (req, res) => {
+    if (req.sid) await db.run('DELETE FROM sessions WHERE id = $1', [req.sid]);
     res.clearCookie(COOKIE, cookieOpts);
     res.json({ ok: true });
-  });
+  }));
 
   router.get('/me', (req, res) => res.json({ user: req.user ? userView(req.user) : null }));
 
   router.post('/password', requireAuth, limiters.password, ah(async (req, res) => {
     const b = bodyOf(req);
     const current = typeof b.current === 'string' ? b.current.slice(0, 128) : '';
-    const row = db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(req.user.id);
+    const row = await db.get('SELECT pass_hash FROM users WHERE id = $1', [req.user.id]);
     if (!(await verifyPassword(current, row.pass_hash))) throw new HttpError(401, 'bad_credentials', 'Поточний пароль невірний');
     const next = validPassword(b.newPassword, req.user.username);
     const hash = await hashPassword(next, cfg.scryptN);
-    db.transaction(() => {
-      db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hash, req.user.id);
-      q.delUserSessions.run(req.user.id); // every other device is logged out
-    })();
-    startSession(res, req.user.id);
+    await db.tx(async (t) => {
+      await t.run('UPDATE users SET pass_hash = $1 WHERE id = $2', [hash, req.user.id]);
+      await t.run('DELETE FROM sessions WHERE user_id = $1', [req.user.id]); // every other device is logged out
+    });
+    await startSession(res, req.user.id);
     res.json({ ok: true });
   }));
 
-  const cleanup = () => db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+  const cleanup = () => db.run('DELETE FROM sessions WHERE expires_at < $1', [Date.now()]);
   return { router, loadUser, requireAuth, requireAdmin, cleanup };
 }
 
