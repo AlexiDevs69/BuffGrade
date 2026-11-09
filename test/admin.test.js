@@ -1,11 +1,11 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { boot, img } = require('./helpers');
+const { boot, dbTest, img } = require('./helpers');
 
 const admins = new Set(['boss']);
 
-test('admin API is invisible to anonymous users and regular players', async () => {
+dbTest('admin API is invisible to anonymous users and regular players', async () => {
   const t = await boot({ admins });
   const anon = t.mkClient();
   assert.equal((await anon.get('/api/admin/items')).status, 401);
@@ -19,10 +19,10 @@ test('admin API is invisible to anonymous users and regular players', async () =
   const boss = await t.signup('Boss'); // nick match is case-insensitive
   assert.equal((await boss.get('/api/auth/me')).json.user.admin, true);
   assert.equal((await boss.get('/api/admin/items')).status, 200);
-  t.close();
+  await t.close();
 });
 
-test('admin: custom skin, exact float, price override, StatTrak', async () => {
+dbTest('admin: custom skin, exact float, price override, StatTrak', async () => {
   const t = await boot({ admins });
   const boss = await t.signup('boss');
   const bad = await boss.post('/api/admin/items', { name: 'X', image: 'http://evil.example/x.png', tier: 'cov', price: 100 });
@@ -59,10 +59,10 @@ test('admin: custom skin, exact float, price override, StatTrak', async () => {
 
   // custom skins are NOT sold on the market and are not upgrade targets
   assert.equal((await boss.post('/api/market/buy', { key, wear: 'FT', stattrak: false })).status, 400);
-  t.close();
+  await t.close();
 });
 
-test('admin: custom case with weights, free price, deleting', async () => {
+dbTest('admin: custom case with weights, free price, deleting', async () => {
   const t = await boot({ admins });
   const boss = await t.signup('boss');
   const key = (await boss.post('/api/admin/items', { name: 'Only Drop', image: img('od'), tier: 'rare', price: 1234 })).json.item.key;
@@ -90,24 +90,24 @@ test('admin: custom case with weights, free price, deleting', async () => {
 
   // a single-item free case always drops that item and costs nothing
   const free = (await boss.post('/api/admin/cases', { name: 'Free', image: img('fc'), price: 0, items: [{ key, w: 5 }] })).json.case.id;
-  const before = t.balance('boss');
+  const before = (await t.balance('boss'));
   const open = await boss.post('/api/cases/' + free + '/open', { count: 3 });
   assert.equal(open.status, 200, JSON.stringify(open.json));
   assert.ok(open.json.items.every((i) => i.key === key));
-  assert.equal(t.balance('boss'), before);
+  assert.equal((await t.balance('boss')), before);
 
   // paid custom case debits the price
   const bob = await t.signup('bob');
   const only = (await boss.post('/api/admin/cases', { name: 'Paid', image: img('pc'), price: 400, items: [{ key, w: 1 }] })).json.case.id;
   const o2 = await bob.post('/api/cases/' + only + '/open', {});
-  assert.equal(o2.status, 200); assert.equal(t.balance('bob'), 600);
+  assert.equal(o2.status, 200); assert.equal((await t.balance('bob')), 600);
 
   // a restart restores the content from the DB
   const { buildCatalog } = require('../server/catalog');
   const { createAdminService } = require('../server/admin');
   const { FIXTURE } = require('./helpers');
   const fresh = buildCatalog(FIXTURE);
-  createAdminService({ db: t.db, catalog: fresh }).restore();
+  await createAdminService({ db: t.db, catalog: fresh }).restore();
   assert.ok(fresh.cases.get(id).custom && fresh.customItems.has(key));
 
   // delete: gone for everybody; real cases cannot be deleted
@@ -115,20 +115,20 @@ test('admin: custom case with weights, free price, deleting', async () => {
   assert.equal((await t.mkClient().get('/api/cases/' + id)).status, 404);
   assert.equal((await boss.post('/api/admin/cases/crate-1/delete', {})).status, 404);
   assert.ok(t.catalog.cases.has('crate-1'));
-  t.close();
+  await t.close();
 });
 
-test('admin: balance changes are guarded and audited', async () => {
+dbTest('admin: balance changes are guarded and audited', async () => {
   const t = await boot({ admins });
   const boss = await t.signup('boss');
   await t.signup('bob');
   const r = await boss.post('/api/admin/balance', { username: 'bob', delta: 500 });
   assert.equal(r.json.balance, 1500);
   assert.equal((await boss.post('/api/admin/balance', { username: 'bob', delta: -1501 })).status, 400);
-  assert.equal(t.balance('bob'), 1500);
+  assert.equal((await t.balance('bob')), 1500);
   assert.equal((await boss.post('/api/admin/balance', { delta: 100 })).json.balance, 1100); // no nick = yourself
   for (const body of [{ username: 'bob', delta: 0 }, { username: 'bob', delta: 1.5 }, { username: 'bob', delta: '5' }, { username: 'ghost', delta: 5 }, { username: 'bob' }])
     assert.equal((await boss.post('/api/admin/balance', body)).status === 200, false, JSON.stringify(body));
-  assert.equal(t.db.prepare("SELECT COUNT(*) n FROM ledger WHERE kind='admin_balance'").get().n, 2);
-  t.close();
+  assert.equal((await t.one("SELECT COUNT(*) n FROM ledger WHERE kind='admin_balance'")).n, 2);
+  await t.close();
 });
