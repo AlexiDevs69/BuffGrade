@@ -1,8 +1,15 @@
 'use strict';
+const crypto = require('node:crypto');
+const nodeTest = require('node:test');
 const assert = require('node:assert/strict');
-const { openDb } = require('../server/db');
+const { openDb, readCa } = require('../server/db');
 const { createApp, loadConfig } = require('../server/index');
 const { buildCatalog } = require('../server/catalog');
+
+// Integration tests need a real PostgreSQL: set TEST_DATABASE_URL (e.g. postgres://user:pass@localhost:5432/buffgrade_test).
+// Every test gets its own schema that is dropped afterwards, so the database can be shared and nothing else is touched.
+const DB_URL = process.env.TEST_DATABASE_URL;
+const dbTest = DB_URL ? nodeTest : (name, fn) => nodeTest.skip(name + ' [set TEST_DATABASE_URL to run]', fn);
 
 const img = (n) => `https://raw.githubusercontent.com/x/y/${n}.png`;
 function crate(id) {
@@ -24,7 +31,8 @@ const FIXTURE = [
 FIXTURE[0].contains.push({ id: 'evil-item', name: 'Evil', rarity: { name: 'Covert' }, image: 'https://evil.example/a.png' }); // item dropped
 
 async function boot(over = {}) {
-  const db = openDb(':memory:');
+  const schema = 't_' + crypto.randomBytes(6).toString('hex');
+  const db = await openDb({ url: DB_URL, ca: readCa(), schema, poolMax: 5, quiet: true });
   const catalog = buildCatalog(FIXTURE);
   const config = { ...loadConfig({}), scryptN: 1024, ...over };
   config.limits = { ...config.limits, api: { windowMs: 60e3, limit: 100000 }, game: { windowMs: 60e3, limit: 100000 }, register: { windowMs: 60e3, limit: 100000 }, ...(over.limits || {}) };
@@ -47,18 +55,23 @@ async function boot(over = {}) {
     return { call, get: (p) => call('GET', p), post: (p, b, h) => call('POST', p, b, h), get cookie() { return cookie; } };
   };
   const signup = async (name, pw = 'correct-horse-9') => { const c = mkClient(); const r = await c.post('/api/auth/register', { username: name, password: pw }); assert.equal(r.status, 201, JSON.stringify(r.json)); return c; };
-  const uid = (name) => db.prepare('SELECT id FROM users WHERE username=?').get(name).id;
-  const give = (name, price, key) => {
+  const uid = async (name) => (await db.get('SELECT id FROM users WHERE lower(username) = lower($1)', [name])).id;
+  const give = async (name, price, key) => {
     const id = 'it' + Math.random().toString(36).slice(2, 12);
     const k = key || catalog.items.keys().next().value;
-    db.prepare('INSERT INTO items(id,user_id,item_key,name,image,tier,wear,wear_float,stattrak,price,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
-      .run(id, uid(name), k, 'x', img('x'), 'mil', 'FT', 0.2, 0, price, Date.now());
+    await db.run('INSERT INTO items(id,user_id,item_key,name,image,tier,wear,wear_float,stattrak,price,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+      [id, await uid(name), k, 'x', img('x'), 'mil', 'FT', 0.2, 0, price, Date.now()]);
     return id;
   };
-  const setBal = (name, b) => db.prepare('UPDATE users SET balance=? WHERE username=?').run(b, name);
-  const balance = (name) => db.prepare('SELECT balance FROM users WHERE username=?').get(name).balance;
-  return { db, catalog, base, mkClient, signup, give, setBal, balance, uid, close: () => { server.closeAllConnections(); server.close(); db.close(); } };
+  const setBal = (name, b) => db.run('UPDATE users SET balance=$1 WHERE lower(username) = lower($2)', [b, name]);
+  const balance = async (name) => (await db.get('SELECT balance FROM users WHERE lower(username) = lower($1)', [name])).balance;
+  const one = (sql, ...params) => db.get(sql, params);   // first row
+  const count = async (sql, ...params) => (await db.get(sql, params)).n; // SELECT COUNT(*) n ...
+  return {
+    db, catalog, base, mkClient, signup, give, setBal, balance, uid, one, count,
+    close: async () => { server.closeAllConnections(); server.close(); await db.dropSchema(); await db.close(); },
+  };
 }
 
 
-module.exports = { boot, FIXTURE, img };
+module.exports = { boot, dbTest, FIXTURE, img };
