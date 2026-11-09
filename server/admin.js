@@ -1,7 +1,8 @@
 'use strict';
 const crypto = require('node:crypto');
 const express = require('express');
-const { HttpError, bodyOf } = require('./util');
+const { HttpError, ah, bodyOf } = require('./util');
+const { insertItems, addLedger } = require('./db');
 const C = require('./catalog');
 
 const { TIERS, WEAR, FT, itemPrice, makeInstance, safeImage, wearForFloat, imageHosts } = C;
@@ -34,39 +35,23 @@ const tier = (v) => { if (!TIERS.includes(v)) throw bad('Невідома рід
 const present = (v) => v !== undefined && v !== null && v !== '';
 
 function createAdminService({ db, catalog }) {
-  const q = {
-    insCustomItem: db.prepare('INSERT INTO custom_items(key, name, image, tier, price, can_st, created_at) VALUES(?,?,?,?,?,?,?)'),
-    delCustomItem: db.prepare('DELETE FROM custom_items WHERE key = ?'),
-    allCustomItems: db.prepare('SELECT * FROM custom_items ORDER BY created_at, key'),
-    insCustomCase: db.prepare('INSERT INTO custom_cases(id, name, image, price, items, created_at) VALUES(?,?,?,?,?,?)'),
-    delCustomCase: db.prepare('DELETE FROM custom_cases WHERE id = ?'),
-    allCustomCases: db.prepare('SELECT * FROM custom_cases ORDER BY created_at, id'),
-    user: db.prepare('SELECT id, username FROM users WHERE username = ?'),
-    balance: db.prepare('SELECT balance FROM users WHERE id = ?'),
-    debit: db.prepare('UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?'),
-    credit: db.prepare('UPDATE users SET balance = balance + ? WHERE id = ?'),
-    insItem: db.prepare(`INSERT INTO items(id, user_id, item_key, name, image, tier, wear, wear_float, stattrak, price, created_at)
-                         VALUES(?,?,?,?,?,?,?,?,?,?,?)`),
-    ledger: db.prepare('INSERT INTO ledger(user_id, kind, delta, balance_after, meta, created_at) VALUES(?,?,?,?,?,?)'),
-  };
-
   const lookup = (key) => catalog.items.get(key) || catalog.customItems.get(key);
   const itemView = (it) => ({ key: it.key, name: it.name, image: it.image, tier: it.tier, price: itemPrice(it, FT, false), canST: it.canST !== false, custom: !!it.custom });
   const caseView = (c) => ({ id: c.id, name: c.name, image: c.image, price: c.price, count: c.items.length, createdAt: c.createdAt || 0 });
-  const userByName = (name) => {
+  const userByName = async (name, t = db) => {
     if (typeof name !== 'string' || !USER_RE.test(name.trim())) throw bad('Некоректний нік гравця');
-    const u = q.user.get(name.trim());
+    const u = await t.get('SELECT id, username FROM users WHERE lower(username) = lower($1)', [name.trim()]);
     if (!u) throw new HttpError(404, 'user_not_found', 'Гравця з таким ніком немає');
     return u;
   };
 
   /* ---------- load what the admin created earlier (called once at startup) ---------- */
-  function restore() {
-    for (const r of q.allCustomItems.all()) {
+  async function restore() {
+    for (const r of await db.all('SELECT * FROM custom_items ORDER BY created_at, key')) {
       if (catalog.customItems.has(r.key) || !TIERS.includes(r.tier) || !safeImage(r.image)) continue;
-      C.addCustomItem(catalog, { key: r.key, name: r.name, image: r.image, tier: r.tier, price: r.price, canST: !!r.can_st });
+      C.addCustomItem(catalog, { key: r.key, name: r.name, image: r.image, tier: r.tier, price: r.price, canST: r.can_st === 1 });
     }
-    for (const r of q.allCustomCases.all()) {
+    for (const r of await db.all('SELECT * FROM custom_cases ORDER BY created_at, id')) {
       const items = safeParse(r.items);
       if (catalog.cases.has(r.id) || !Array.isArray(items) || !items.length || !safeImage(r.image)) continue;
       const ok = items.filter((i) => i && TIERS.includes(i.tier) && safeImage(i.image) && Number.isSafeInteger(i.w) && i.w > 0);
@@ -88,38 +73,25 @@ function createAdminService({ db, catalog }) {
     return { items: items.slice(0, 30), cases };
   }
 
-  function createItem(b) {
+  async function createItem(b) {
     const d = {
       key: rid('cx_'), name: text(b.name, 120, 'Назва'), image: image(b.image), tier: tier(b.tier),
       price: int(b.price, 1, MAX_MONEY, 'Ціна'), canST: b.canST === undefined ? true : b.canST === true,
     };
-    q.insCustomItem.run(d.key, d.name, d.image, d.tier, d.price, d.canST ? 1 : 0, Date.now());
+    await db.run('INSERT INTO custom_items(key, name, image, tier, price, can_st, created_at) VALUES($1,$2,$3,$4,$5,$6,$7)',
+      [d.key, d.name, d.image, d.tier, d.price, d.canST ? 1 : 0, Date.now()]);
     return itemView(C.addCustomItem(catalog, d));
   }
 
-  function deleteItem(key) {
+  async function deleteItem(key) {
     if (!catalog.customItems.has(key)) throw new HttpError(404, 'item_not_found', 'Свого скіна з таким id немає');
-    q.delCustomItem.run(key);
+    await db.run('DELETE FROM custom_items WHERE key = $1', [key]);
     C.removeCustomItem(catalog, key); // inventories and existing cases keep their own copies
     return { ok: true };
   }
 
-  const give = db.transaction((adminId, user, it, st, count, mk, priceOverride, now) => {
-    const out = [];
-    for (let i = 0; i < count; i++) {
-      const inst = mk();
-      if (priceOverride) inst.price = priceOverride;
-      const id = crypto.randomBytes(12).toString('base64url');
-      q.insItem.run(id, user.id, inst.key, inst.name, inst.image, inst.tier, inst.wear, inst.float, inst.stattrak ? 1 : 0, inst.price, now);
-      out.push({ id, ...inst });
-    }
-    const bal = q.balance.get(user.id).balance;
-    q.ledger.run(user.id, 'admin_give', 0, bal, JSON.stringify({ by: adminId, key: it.key, count, items: out.map((x) => x.id) }), now);
-    return out;
-  });
-
-  function giveItems(adminId, adminName, b) {
-    const user = userByName(present(b.username) ? b.username : adminName);
+  async function giveItems(adminId, adminName, b) {
+    const user = await userByName(present(b.username) ? b.username : adminName);
     const it = typeof b.key === 'string' ? lookup(b.key) : null;
     if (!it) throw bad('Невідомий скін');
     const st = b.stattrak === true;
@@ -140,12 +112,19 @@ function createAdminService({ db, catalog }) {
       mk = () => makeInstance(it, w, st);
     } else mk = () => makeInstance(it, undefined, st);
 
-    const items = give.immediate(adminId, user, it, st, count, mk, priceOverride, Date.now());
+    const now = Date.now();
+    const items = await db.tx(async (t) => {
+      const drops = Array.from({ length: count }, () => { const d = mk(); if (priceOverride) d.price = priceOverride; return d; });
+      const rows = await insertItems(t, user.id, drops, now);
+      const { balance } = await t.get('SELECT balance FROM users WHERE id = $1', [user.id]);
+      await addLedger(t, user.id, 'admin_give', 0, balance, { by: adminId, key: it.key, count, items: rows.map((x) => x.id) }, now);
+      return rows.map((x, i) => ({ id: x.id, ...drops[i] }));
+    });
     return { user: user.username, count, items };
   }
 
   /* ---------- cases ---------- */
-  function createCase(b) {
+  async function createCase(b) {
     const price = int(b.price, 0, MAX_MONEY, 'Ціна кейса');
     if (!Array.isArray(b.items) || b.items.length < 1 || b.items.length > MAX_CASE_ITEMS) throw bad('У кейсі має бути від 1 до ' + MAX_CASE_ITEMS + ' скінів');
     const seen = new Set();
@@ -161,31 +140,33 @@ function createAdminService({ db, catalog }) {
       };
     });
     const d = { id: rid('cx_'), name: text(b.name, 60, 'Назва кейса'), image: image(b.image), price, items, createdAt: Date.now() };
-    q.insCustomCase.run(d.id, d.name, d.image, d.price, JSON.stringify(items), d.createdAt);
+    await db.run('INSERT INTO custom_cases(id, name, image, price, items, created_at) VALUES($1,$2,$3,$4,$5,$6)',
+      [d.id, d.name, d.image, d.price, JSON.stringify(items), d.createdAt]);
     return caseView(C.addCustomCase(catalog, d));
   }
 
-  function deleteCase(id) {
+  async function deleteCase(id) {
     const c = catalog.cases.get(id);
     if (!c || !c.custom) throw new HttpError(404, 'case_not_found', 'Свого кейса з таким id немає'); // real catalog cases cannot be removed
-    q.delCustomCase.run(id);
+    await db.run('DELETE FROM custom_cases WHERE id = $1', [id]);
     C.removeCustomCase(catalog, id);
     return { ok: true };
   }
 
   /* ---------- balance ---------- */
-  const adjust = db.transaction((adminId, user, delta, now) => {
-    if (delta > 0) q.credit.run(delta, user.id);
-    else if (q.debit.run(-delta, user.id, -delta).changes !== 1) throw bad('У гравця немає стільки монет');
-    const bal = q.balance.get(user.id).balance;
-    q.ledger.run(user.id, 'admin_balance', delta, bal, JSON.stringify({ by: adminId }), now);
-    return bal;
-  });
-  function changeBalance(adminId, adminName, b) {
-    const user = userByName(present(b.username) ? b.username : adminName);
+  async function changeBalance(adminId, adminName, b) {
+    const user = await userByName(present(b.username) ? b.username : adminName);
     const delta = int(b.delta, -MAX_MONEY, MAX_MONEY, 'Сума');
     if (delta === 0) throw bad('Сума не може бути нулем');
-    return { user: user.username, balance: adjust.immediate(adminId, user, delta, Date.now()) };
+    const now = Date.now();
+    const balance = await db.tx(async (t) => {
+      // One guarded UPDATE: it can never push the balance below zero and it locks the row until COMMIT.
+      const row = await t.get('UPDATE users SET balance = balance + $1 WHERE id = $2 AND balance + $1 >= 0 RETURNING balance', [delta, user.id]);
+      if (!row) throw bad('У гравця немає стільки монет');
+      await addLedger(t, user.id, 'admin_balance', delta, row.balance, { by: adminId }, now);
+      return row.balance;
+    });
+    return { user: user.username, balance };
   }
 
   return {
@@ -195,9 +176,9 @@ function createAdminService({ db, catalog }) {
   };
 }
 
-function createAdmin({ db, catalog, limiters, requireAuth, requireAdmin }) {
+async function createAdmin({ db, catalog, limiters, requireAuth, requireAdmin }) {
   const svc = createAdminService({ db, catalog });
-  svc.restore();
+  await svc.restore();
   const r = express.Router();
   // Logged-out -> 401, logged-in non-admin -> 404, so the panel is invisible to regular players.
   r.use('/admin', requireAuth, requireAdmin, limiters.game);
@@ -207,13 +188,13 @@ function createAdmin({ db, catalog, limiters, requireAuth, requireAdmin }) {
     res.json(svc.search(req.query.q));
   });
   r.get('/admin/items', (req, res) => res.json({ items: svc.listItems() }));
-  r.post('/admin/items', (req, res) => res.status(201).json({ item: svc.createItem(bodyOf(req)) }));
-  r.post('/admin/items/:key/delete', (req, res) => res.json(svc.deleteItem(String(req.params.key))));
-  r.post('/admin/give', (req, res) => res.json(svc.giveItems(req.user.id, req.user.username, bodyOf(req))));
+  r.post('/admin/items', ah(async (req, res) => res.status(201).json({ item: await svc.createItem(bodyOf(req)) })));
+  r.post('/admin/items/:key/delete', ah(async (req, res) => res.json(await svc.deleteItem(String(req.params.key)))));
+  r.post('/admin/give', ah(async (req, res) => res.json(await svc.giveItems(req.user.id, req.user.username, bodyOf(req)))));
   r.get('/admin/cases', (req, res) => res.json({ cases: svc.listCases() }));
-  r.post('/admin/cases', (req, res) => res.status(201).json({ case: svc.createCase(bodyOf(req)) }));
-  r.post('/admin/cases/:id/delete', (req, res) => res.json(svc.deleteCase(String(req.params.id))));
-  r.post('/admin/balance', (req, res) => res.json(svc.changeBalance(req.user.id, req.user.username, bodyOf(req))));
+  r.post('/admin/cases', ah(async (req, res) => res.status(201).json({ case: await svc.createCase(bodyOf(req)) })));
+  r.post('/admin/cases/:id/delete', ah(async (req, res) => res.json(await svc.deleteCase(String(req.params.id)))));
+  r.post('/admin/balance', ah(async (req, res) => res.json(await svc.changeBalance(req.user.id, req.user.username, bodyOf(req)))));
   return r;
 }
 
