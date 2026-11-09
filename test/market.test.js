@@ -1,66 +1,66 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { boot } = require('./helpers');
+const { boot, dbTest } = require('./helpers');
 const { categoryOf, WEAR } = require('../server/catalog');
 
-const count = (t, sql, ...a) => t.db.prepare(sql).get(...a).n;
+const count = (t, sql, ...a) => t.count(sql, ...a);
 
-test('multi-open: N cases cost exactly N x price, one transaction, N drops, N history rows', async () => {
+dbTest('multi-open: N cases cost exactly N x price, one transaction, N drops, N history rows', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const price = t.catalog.cases.get('crate-1').price;
-  t.setBal('alice', 100000);
+  await t.setBal('alice', 100000);
   const r = await a.post('/api/cases/crate-1/open', { count: 5 });
   assert.equal(r.status, 200);
   assert.equal(r.json.items.length, 5);
   assert.deepEqual(r.json.item, r.json.items[0]);
   assert.equal(r.json.balance, 100000 - price * 5);
-  assert.equal(t.balance('alice'), 100000 - price * 5);
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM items'), 5);
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM history'), 5);
-  assert.equal(count(t, "SELECT COUNT(*) n FROM ledger WHERE kind='case_open'"), 1);
+  assert.equal((await t.balance('alice')), 100000 - price * 5);
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM items'), 5);
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM history'), 5);
+  assert.equal(await count(t, "SELECT COUNT(*) n FROM ledger WHERE kind='case_open'"), 1);
   const best = (await a.get('/api/profile')).json.bestDrop;
   assert.equal(best.price, Math.max(...r.json.items.map((i) => i.price)));
   assert.equal((await a.post('/api/cases/crate-1/open', {})).json.items.length, 1); // default count = 1
-  t.close();
+  await t.close();
 });
 
-test('multi-open: count is validated', async () => {
+dbTest('multi-open: count is validated', async () => {
   const t = await boot();
-  const a = await t.signup('alice'); t.setBal('alice', 1e6);
+  const a = await t.signup('alice'); await t.setBal('alice', 1e6);
   for (const c of [0, -1, 11, 100, 1.5, '3', null, [], {}, true, NaN, 1e9])
     assert.equal((await a.post('/api/cases/crate-1/open', { count: c })).status, 400, String(c));
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM items'), 0);
-  assert.equal(t.balance('alice'), 1e6);
-  t.close();
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM items'), 0);
+  assert.equal((await t.balance('alice')), 1e6);
+  await t.close();
 });
 
-test('multi-open: not enough money for the whole batch means NOTHING happens', async () => {
+dbTest('multi-open: not enough money for the whole batch means NOTHING happens', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const price = t.catalog.cases.get('crate-1').price;
-  t.setBal('alice', price * 9 + price - 1);
+  await t.setBal('alice', price * 9 + price - 1);
   const r = await a.post('/api/cases/crate-1/open', { count: 10 });
   assert.equal(r.status, 402);
-  assert.equal(t.balance('alice'), price * 10 - 1);
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM items'), 0);
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM history'), 0);
+  assert.equal((await t.balance('alice')), price * 10 - 1);
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM items'), 0);
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM history'), 0);
   assert.equal((await a.post('/api/cases/crate-1/open', { count: 9 })).status, 200);
-  t.close();
+  await t.close();
 });
 
-test('multi-open: parallel batches cannot overspend', async () => {
+dbTest('multi-open: parallel batches cannot overspend', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const price = t.catalog.cases.get('crate-1').price;
-  t.setBal('alice', price * 15 + 3);
+  await t.setBal('alice', price * 15 + 3);
   const rs = await Promise.all(Array.from({ length: 6 }, () => a.post('/api/cases/crate-1/open', { count: 5 })));
   assert.equal(rs.filter((r) => r.status === 200).length, 3);
   assert.equal(rs.filter((r) => r.status === 402).length, 3);
-  assert.equal(t.balance('alice'), 3);
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM items'), 15);
-  t.close();
+  assert.equal((await t.balance('alice')), 3);
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM items'), 15);
+  await t.close();
 });
 
 test('categories: weapons map to the right type', () => {
@@ -69,7 +69,7 @@ test('categories: weapons map to the right type', () => {
   for (const [n, c] of Object.entries(cases)) assert.equal(categoryOf(n), c, n);
 });
 
-test('market: public browsing, filters really filter, sort and pagination are consistent', async () => {
+dbTest('market: public browsing, filters really filter, sort and pagination are consistent', async () => {
   const t = await boot();
   const g = t.mkClient();
   const all = (await g.get('/api/market?per=48')).json;
@@ -98,10 +98,10 @@ test('market: public browsing, filters really filter, sort and pagination are co
   do { const p = await get(`per=12&page=${page}`); pages = p.pages; for (const l of p.listings) seen.add(l.key + l.wear + l.stattrak); page++; } while (page <= pages);
   assert.equal(seen.size, all.total);                                   // pages cover every listing exactly once
   assert.equal((await get('page=99999')).listings.length, 0);
-  t.close();
+  await t.close();
 });
 
-test('market: hostile or malformed query params are rejected, never crash', async () => {
+dbTest('market: hostile or malformed query params are rejected, never crash', async () => {
   const t = await boot();
   const g = t.mkClient();
   const bad = ['tier=bad', 'wear=XX', 'wear=FN,,FT', 'st=maybe', 'min=-1', 'min=abc', 'min=1e3', 'max=99999999999', 'page=0', 'page=x', 'per=1', 'per=1000',
@@ -115,11 +115,11 @@ test('market: hostile or malformed query params are rejected, never crash', asyn
   assert.equal((await g.get('/api/market?q=.*(a+)+$')).json.total, 0);                                      // no regex, no ReDoS
   assert.equal((await g.get('/api/market?q[x]=1')).json.total, (await g.get('/api/market')).json.total); // bracket syntax is not parsed into objects, key is ignored
   assert.equal((await g.get('/api/market?tier=mil,mil,mil,mil,mil,mil,mil')).json.total, (await g.get('/api/market?tier=mil')).json.total); // duplicates collapse, same answer
-  assert.equal(count(t, "SELECT COUNT(*) n FROM sqlite_master WHERE name='users'"), 1);
-  t.close();
+  assert.equal(await count(t, "SELECT COUNT(*) n FROM information_schema.tables WHERE table_schema = current_schema() AND table_name='users'"), 1);
+  await t.close();
 });
 
-test('market buy: server prices, exact debit, item sells for LESS than it cost', async () => {
+dbTest('market buy: server prices, exact debit, item sells for LESS than it cost', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const l = (await a.get('/api/market?per=12&wear=FT&st=no')).json.listings[0];
@@ -127,7 +127,7 @@ test('market buy: server prices, exact debit, item sells for LESS than it cost',
   assert.equal(r.status, 200);
   assert.equal(r.json.cost, l.price);
   assert.equal(r.json.balance, 1000 - l.price);
-  assert.equal(t.balance('alice'), 1000 - l.price);
+  assert.equal((await t.balance('alice')), 1000 - l.price);
   assert.equal(r.json.item.price, l.value);
   assert.ok(r.json.item.price < r.json.cost);
   assert.equal(r.json.item.wear, 'FT');
@@ -137,22 +137,22 @@ test('market buy: server prices, exact debit, item sells for LESS than it cost',
   assert.equal(inv.length, 1); assert.equal(inv[0].id, r.json.item.id);
   const sold = await a.post('/api/inventory/sell', { ids: [r.json.item.id] });
   assert.ok(sold.json.balance < 1000, 'buy + sell must never profit');
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM history'), 0);                         // purchases are not "drops"
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM history'), 0);                         // purchases are not "drops"
   assert.equal((await a.get('/api/profile')).json.bestDrop, null);
-  assert.equal(count(t, "SELECT COUNT(*) n FROM ledger WHERE kind='market_buy'"), 1);
-  t.close();
+  assert.equal(await count(t, "SELECT COUNT(*) n FROM ledger WHERE kind='market_buy'"), 1);
+  await t.close();
 });
 
-test('market buy: no profit loop for ANY listing (cost > sell value, always)', async () => {
+dbTest('market buy: no profit loop for ANY listing (cost > sell value, always)', async () => {
   const t = await boot();
   const g = t.mkClient();
   let p = 1, checked = 0, pages = 1;
   do { const r = (await g.get(`/api/market?per=48&page=${p}`)).json; pages = r.pages; for (const l of r.listings) { assert.ok(l.price > l.value, l.name); checked++; } p++; } while (p <= pages);
   assert.ok(checked > 50);
-  t.close();
+  await t.close();
 });
 
-test('market buy: validation, ownership of money, StatTrak rules', async () => {
+dbTest('market buy: validation, ownership of money, StatTrak rules', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const item = [...t.catalog.items.values()].find((i) => i.canST);
@@ -163,24 +163,24 @@ test('market buy: validation, ownership of money, StatTrak rules', async () => {
     { key: item.key, wear: 'FN' }, { key: item.key, wear: 'FN', stattrak: 'true' }, { key: item.key, wear: 'FN', stattrak: 1 }, { key: 5, wear: 'FN', stattrak: false }, { key: item.key, wear: ['FN'], stattrak: false },
     { key: glove.key, wear: 'FN', stattrak: true }, { key: 'x'.repeat(101), wear: 'FN', stattrak: false }])
     assert.equal((await a.post('/api/market/buy', body)).status, 400, JSON.stringify(body).slice(0, 60));
-  assert.equal(t.balance('alice'), 1000);
-  t.setBal('alice', 1e6);
+  assert.equal((await t.balance('alice')), 1000);
+  await t.setBal('alice', 1e6);
   assert.equal((await a.post('/api/market/buy', { key: glove.key, wear: 'FN', stattrak: false })).status, 200);       // gloves without StatTrak are fine
-  t.close();
+  await t.close();
 });
 
-test('market buy: cannot overspend with parallel requests, poor users get 402 and nothing changes', async () => {
+dbTest('market buy: cannot overspend with parallel requests, poor users get 402 and nothing changes', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const l = (await a.get('/api/market?sort=price_asc&per=12')).json.listings[0];
-  t.setBal('alice', l.price * 2 + 1);
+  await t.setBal('alice', l.price * 2 + 1);
   const rs = await Promise.all(Array.from({ length: 10 }, () => a.post('/api/market/buy', { key: l.key, wear: l.wear, stattrak: l.stattrak })));
   assert.equal(rs.filter((r) => r.status === 200).length, 2);
   assert.equal(rs.filter((r) => r.status === 402).length, 8);
-  assert.equal(t.balance('alice'), 1);
-  assert.equal(count(t, 'SELECT COUNT(*) n FROM items'), 2);
+  assert.equal((await t.balance('alice')), 1);
+  assert.equal(await count(t, 'SELECT COUNT(*) n FROM items'), 2);
   const expensive = (await a.get('/api/market?sort=price_desc&per=12')).json.listings[0];
   const r = await a.post('/api/market/buy', { key: expensive.key, wear: expensive.wear, stattrak: expensive.stattrak });
-  assert.equal(r.status, 402); assert.equal(t.balance('alice'), 1); assert.equal(count(t, 'SELECT COUNT(*) n FROM items'), 2);
-  t.close();
+  assert.equal(r.status, 402); assert.equal((await t.balance('alice')), 1); assert.equal(await count(t, 'SELECT COUNT(*) n FROM items'), 2);
+  await t.close();
 });
