@@ -3,7 +3,7 @@ const path = require('node:path');
 const express = require('express');
 const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
-const { openDb } = require('./db');
+const { openDb, readCa } = require('./db');
 const { loadCatalog, allowImageHosts } = require('./catalog');
 const { createAuth, hashPassword } = require('./auth');
 const { createGame } = require('./game');
@@ -19,7 +19,12 @@ function loadConfig(env = process.env) {
     isProd: env.NODE_ENV === 'production',
     trustProxy: tp ? (/^\d+$/.test(tp) ? Number(tp) : tp) : false, // set to 1 behind one reverse proxy, otherwise IP limits see the proxy
     allowedOrigins: (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
-    dbPath: env.DB_PATH || path.join(__dirname, '..', 'data', 'buffgrade.db'),
+    db: {                                       // PostgreSQL (Aiven): see README, "Database"
+      url: env.DATABASE_URL,
+      ca: readCa(env),                          // DATABASE_CA (PEM text) or DATABASE_CA_FILE
+      ssl: env.DATABASE_SSL,                    // 'off' | 'no-verify' (optional)
+      poolMax: Number(env.DB_POOL_MAX) || 10,
+    },
     cacheFile: env.CATALOG_CACHE || path.join(__dirname, '..', 'data', 'crates.json'),
     scryptN: Number(env.SCRYPT_N) || 65536,
     admins: new Set((env.ADMIN_USERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)), // nicks that may use /admin.html
@@ -117,7 +122,7 @@ async function createApp({ db, catalog, config: cfg }) {
   app.use('/api', createGame({ db, catalog, cfg, limiters, requireAuth: auth.requireAuth }));
   app.use('/api', createMarket({ db, catalog, limiters, requireAuth: auth.requireAuth }));
   app.use('/api', createProfile({ db, catalog, limiters, requireAuth: auth.requireAuth }));
-  app.use('/api', createAdmin({ db, catalog, limiters, requireAuth: auth.requireAuth, requireAdmin: auth.requireAdmin }));
+  app.use('/api', await createAdmin({ db, catalog, limiters, requireAuth: auth.requireAuth, requireAdmin: auth.requireAdmin }));
   app.use('/api', (req, res, next) => next(new HttpError(404, 'not_found', 'Не знайдено')));
 
   // eslint-disable-next-line no-unused-vars
@@ -135,14 +140,15 @@ async function createApp({ db, catalog, config: cfg }) {
 
 async function main() {
   const cfg = loadConfig();
-  const db = openDb(cfg.dbPath);
+  const db = await openDb(cfg.db);
+  console.log('database: connected');
   const catalog = await loadCatalog({ cacheFile: cfg.cacheFile });
   console.log(`catalog: ${catalog.cases.size} cases, ${catalog.items.size} items`);
   const app = await createApp({ db, catalog, config: cfg });
-  const timer = setInterval(app.locals.cleanup, 3600e3);
+  const timer = setInterval(() => app.locals.cleanup().catch((e) => console.error('[cleanup]', e.message)), 3600e3);
   timer.unref();
   const server = app.listen(cfg.port, () => console.log(`BuffGrade on http://localhost:${cfg.port}`));
-  const stop = () => { server.close(() => { db.close(); process.exit(0); }); };
+  const stop = () => { server.close(() => { db.close().finally(() => process.exit(0)); }); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }
