@@ -7,7 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📦</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Manrope:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -16,11 +16,11 @@
   <div class="wrap bar">
     <a href="#" data-go="home" class="logo" aria-label="BuffGrade, на головну"><i></i>BuffGrade</a>
     <nav aria-label="Основне меню">
-      <button data-go="home" class="on">Кейси</button>
-      <button data-go="market">Ринок</button>
-      <button data-go="up">Апгрейдер</button>
-      <button data-soon="Бої кейсів">Бої</button>
-      <button data-soon="Контракти обміну">Контракти</button>
+      <button data-go="home" class="on"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg><span>Кейси</span></button>
+      <button data-go="market"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16l-1.5 11a2 2 0 0 1-2 1.7h-9a2 2 0 0 1-2-1.7z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg><span>Ринок</span></button>
+      <button data-go="up"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V6M6 12l6-6 6 6"/><path d="M5 20h14"/></svg><span>Апгрейдер</span></button>
+      <button data-soon="Бої кейсів"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19L19 5M14 5h5v5M5 5l5 5M3 21l3-3"/></svg><span>Бої</span></button>
+      <button data-soon="Контракти обміну"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg><span>Контракти</span></button>
     </nav>
     <div class="wallet" id="wallet" hidden title="Віртуальна валюта, за гроші не купується"><span class="coin"></span><span id="bal">0</span></div>
     <button class="who" id="who" data-go="prof" hidden></button>
@@ -162,15 +162,41 @@
 </div>
 
 <div class="wrap view" id="v-up" hidden>
-  <div class="head" style="margin-top:32px"><h2>Апгрейдер</h2><p>Став скіни, обирай дорожчу ціль. Шанс рахується з комісією 5%</p></div>
-  <div class="upbox">
-    <div class="wheel" id="wheel"><div class="needle" id="needle"></div><div class="wc"><b id="wpct">0%</b><span>шанс успіху</span></div></div>
-    <button class="btn btn-main" id="upgo" disabled>Апгрейдити</button>
-    <div class="drop" id="upres" aria-live="polite"></div>
+  <div class="head" style="margin-top:32px"><h2>Апгрейдер</h2><p>Став скіни й обирай будь-яку дорожчу ціль. Шанс від 0.5% до 90%, комісія 5%</p></div>
+  <div class="arena" id="arena">
+    <div class="slot"><span class="slot-lbl">Твій скін</span><div class="slot-body" id="slotL"></div></div>
+    <div class="gauge-box">
+      <div class="wheel" id="wheel">
+        <svg viewBox="0 0 220 220" aria-hidden="true">
+          <circle class="g-dots" cx="110" cy="110" r="76"/>
+          <circle class="g-bg" cx="110" cy="110" r="92"/>
+          <circle class="g-win" id="gwin" cx="110" cy="110" r="92" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 110 110)"/>
+        </svg>
+        <div class="needle" id="needle"></div>
+        <div class="wc"><b id="wpct">0%</b><span>шанс успіху</span><em id="wmult"></em></div>
+      </div>
+      <button class="btn btn-main btn-xl" id="upgo" disabled>Апгрейдити</button>
+      <div class="drop" id="upres" aria-live="polite"></div>
+    </div>
+    <div class="slot"><span class="slot-lbl">Ціль</span><div class="slot-body" id="slotR"></div></div>
   </div>
   <div class="upgrid">
-    <div><h3 class="sub" style="margin-top:0">Твої скіни</h3><div class="igrid scroll" id="uplist"></div></div>
-    <div><h3 class="sub" style="margin-top:0">Ціль</h3><div class="igrid scroll" id="uptargets"></div></div>
+    <div>
+      <h3 class="sub" style="margin-top:0">Твої скіни <span class="cnt" id="upsum"></span></h3>
+      <div class="igrid scroll" id="uplist"></div>
+    </div>
+    <div>
+      <h3 class="sub" style="margin-top:0">Цілі <span class="cnt" id="uptotal"></span></h3>
+      <div class="uptools">
+        <input id="upq" type="search" maxlength="60" placeholder="Пошук: AK-47, Karambit…" autocomplete="off" aria-label="Пошук цілі">
+        <select id="upsort" aria-label="Сортування цілей"><option value="price_asc">Найвищий шанс</option><option value="price_desc">Найдорожчі</option></select>
+      </div>
+      <div class="chips" id="upchips" role="group" aria-label="Фільтр за шансом">
+        <button class="on" data-min="" data-max="">Усі</button><button data-min="30" data-max="">30%+</button><button data-min="10" data-max="30">10–30%</button><button data-min="3" data-max="10">3–10%</button><button data-min="1" data-max="3">1–3%</button><button data-min="0.5" data-max="1">0.5–1%</button>
+      </div>
+      <div class="igrid scroll" id="uptargets"></div>
+      <button class="btn btn-ghost" id="upmore" hidden style="margin-top:12px">Показати ще</button>
+    </div>
   </div>
 </div>
 </main>
