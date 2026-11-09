@@ -518,64 +518,143 @@ $('#pavatar').addEventListener('click', openAvatarPicker);
 $('#av-close').addEventListener('click', () => $('#avdlg').close());
 
 /* ---------- upgrader ---------- */
+// These numbers mirror server/game.js and are only used to PREVIEW the odds. The server recomputes everything and decides.
+const UP_MIN = 0.5, UP_MAX = 90, UP_FEE = 950000;
+const upChance = (sum, price) => Math.min(UP_MAX * 10000, Math.floor((sum * UP_FEE) / price)) / 10000;
+const fmtPct = (c) => { const s = Number(c).toFixed(c >= 10 ? 1 : 2); return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s; };
+const chanceClass = (c) => (c >= 30 ? 'hi' : c >= 10 ? 'mid' : c >= 3 ? 'low' : 'vlow');
+
 const upSel = new Set(); let upTarget = null, upBusy = false, upTok = 0;
-function setWheel(ch) {
-  $('#wheel').style.setProperty('--p', ch + '%'); $('#wpct').textContent = ch.toFixed(1) + '%';
-  $('#upgo').disabled = !ch || upBusy;
-}
+const upFilter = { q: '', min: '', max: '', sort: 'price_asc' };
+const upSum = () => state.inv.reduce((a, i) => a + (upSel.has(i.id) ? i.price : 0), 0);
+
 function emptyMsg(el, text) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = text; el.replaceChildren(p); }
-// The cached inventory can be stale (cases opened, items bought or sold since the last load), so entering the tab reloads it first.
-async function openUp() {
-  emptyMsg($('#uplist'), 'Завантажуємо інвентар…');
-  await loadInv();
-  if (view === 'up') renderUp();
+function slotNode(text) { const p = document.createElement('p'); p.className = 'slot-ph'; p.textContent = text; return p; }
+function setGauge(ch) {
+  $('#gwin').setAttribute('stroke-dasharray', ch + ' ' + (100 - ch));
+  $('#wpct').textContent = fmtPct(ch) + '%';
 }
-async function renderUp() {
-  for (const id of [...upSel]) if (!state.inv.some((i) => i.id === id)) upSel.delete(id);
+// Clears the result of the previous spin (colours, needle, message).
+function resetStage() {
+  $('#arena').classList.remove('win', 'lose', 'spin'); $('#slotL').classList.remove('lost');
+  const nd = $('#needle'); nd.style.transition = 'none'; nd.style.transform = 'rotate(0deg)';
+  $('#upres').textContent = '';
+}
+// Left slot = what you put in, right slot = what you want, the wheel between them shows the odds.
+function paintStage() {
+  const picked = state.inv.filter((i) => upSel.has(i.id)).sort((a, b) => b.price - a.price), sum = upSum();
+  if (!picked.length) $('#slotL').replaceChildren(slotNode('Обери скіни з інвентаря нижче'));
+  else if (picked.length === 1) $('#slotL').replaceChildren(icard(picked[0], ''));
+  else $('#slotL').replaceChildren(icard({ ...picked[0], name: picked.length + ' скінів', price: sum }, 'stack', 'Найдорожчий: ' + picked[0].name));
+  if (upTarget && sum) $('#slotR').replaceChildren(icard({ ...upTarget, wear: 'FT' }, '', 'FT · ×' + (upTarget.price / sum).toFixed(2)));
+  else $('#slotR').replaceChildren(slotNode('Обери ціль зі списку'));
+  const ch = upTarget && sum ? upChance(sum, upTarget.price) : 0;
+  setGauge(ch);
+  $('#wmult').textContent = upTarget && sum ? '×' + (upTarget.price / sum).toFixed(2) : '';
+  $('#upgo').disabled = upBusy || ch < UP_MIN || !upSel.size;
+  $('#upsum').textContent = picked.length ? '· ' + picked.length + ' шт., разом ' + fmt(sum) : '';
+}
+
+function targetCard(t) {
+  const c = icard({ ...t, wear: 'FT' }, upTarget && upTarget.key === t.key ? 'sel' : '', 'FT · ×' + (t.price / upSum()).toFixed(1));
+  const b = document.createElement('span'); b.className = 'chance-badge ' + chanceClass(t.chance); b.textContent = fmtPct(t.chance) + '%';
+  c.append(b);
+  c.addEventListener('click', () => {
+    if (upBusy) return;
+    resetStage(); upTarget = t;
+    document.querySelectorAll('#uptargets .icard.sel').forEach((x) => x.classList.remove('sel'));
+    c.classList.add('sel'); paintStage();
+    // the lists are below the arena: bring the wheel and the button back into view after picking a target
+    const r = $('#arena').getBoundingClientRect();
+    if (r.top < 70 || r.bottom > innerHeight) $('#arena').scrollIntoView({ behavior: quickMotion() ? 'auto' : 'smooth', block: 'center' });
+  });
+  return c;
+}
+// reset = true: first page of a fresh list; false: append the next page. Any skin above the stake with a chance of at least 0.5% is offered.
+let upPage = 1;
+async function loadTargets(reset) {
+  const T = $('#uptargets'), sum = upSum(), tok = ++upTok;
+  if (!sum) { emptyMsg(T, 'Обери скіни зліва, і тут з’являться цілі.'); $('#uptotal').textContent = ''; $('#upmore').hidden = true; return; }
+  const qs = new URLSearchParams({ sum, sort: upFilter.sort, page: reset ? 1 : upPage + 1, per: 24 });
+  for (const k of ['q', 'min', 'max']) if (upFilter[k] !== '') qs.set(k, upFilter[k]);
+  let r;
+  try { r = await api('/upgrade/targets?' + qs); } catch (e) { toast(e.message); return; }
+  if (tok !== upTok) return; // a newer selection or filter superseded this response
+  upPage = r.page;
+  if (reset) T.replaceChildren();
+  if (reset && !r.targets.length) emptyMsg(T, upFilter.q || upFilter.min || upFilter.max ? 'Нічого не знайдено за цими фільтрами.' : 'Немає цілей для такої суми. Додай ще скінів.');
+  r.targets.forEach((t) => T.append(targetCard(t)));
+  $('#uptotal').textContent = '· ' + fmt(r.total);
+  $('#upmore').hidden = r.page >= r.pages;
+}
+function onUpSelection() {
+  const sum = upSum();
+  if (upTarget && (upTarget.price <= sum || upChance(sum, upTarget.price) < UP_MIN)) upTarget = null; // no longer reachable with this stake
+  paintStage(); loadTargets(true);
+}
+function renderUpInv() {
   const L = $('#uplist'); L.replaceChildren();
-  if (!state.inv.length) emptyMsg(L, 'Інвентар порожній. Спершу відкрий кейс.');
+  if (!state.inv.length) { emptyMsg(L, 'Інвентар порожній. Спершу відкрий кейс.'); return; }
   state.inv.slice().sort((a, b) => b.price - a.price).forEach((it) => {
     const c = icard(it, upSel.has(it.id) ? 'sel' : '');
     c.addEventListener('click', () => {
       if (upBusy) return;
-      if (upSel.has(it.id)) upSel.delete(it.id);
-      else if (upSel.size >= 10) { toast('Максимум 10 скінів за раз'); return; }
-      else upSel.add(it.id);
-      renderUp();
+      if (!upSel.has(it.id) && upSel.size >= 10) { toast('Максимум 10 скінів за раз'); return; }
+      resetStage();
+      if (upSel.has(it.id)) upSel.delete(it.id); else upSel.add(it.id);
+      c.classList.toggle('sel', upSel.has(it.id));
+      onUpSelection();
     });
     L.append(c);
   });
-  const sum = state.inv.filter((i) => upSel.has(i.id)).reduce((a, i) => a + i.price, 0), T = $('#uptargets'), tok = ++upTok;
-  if (!sum) { upTarget = null; emptyMsg(T, 'Обери скіни зліва, і тут з’являться цілі.'); setWheel(0); return; }
-  let targets = [];
-  try { targets = (await api('/upgrade/targets?sum=' + sum)).targets; } catch (e) { toast(e.message); }
-  if (tok !== upTok) return; // a newer selection superseded this response
-  upTarget = upTarget ? targets.find((t) => t.key === upTarget.key) || null : null;
-  T.replaceChildren();
-  if (!targets.length) emptyMsg(T, 'Немає цілей для такої суми. Додай ще скінів або відкрий більше кейсів.');
-  targets.forEach((t) => {
-    const c = icard({ ...t, wear: 'FT' }, upTarget && upTarget.key === t.key ? 'sel' : '', 'FT, шанс ' + t.chance.toFixed(1) + '%');
-    c.addEventListener('click', () => { if (!upBusy) { upTarget = t; renderUp(); } });
-    T.append(c);
-  });
-  setWheel(upTarget ? upTarget.chance : 0);
 }
+function renderUp() {
+  for (const id of [...upSel]) if (!state.inv.some((i) => i.id === id)) upSel.delete(id);
+  renderUpInv(); onUpSelection();
+}
+// The cached inventory can be stale (cases opened, items bought or sold since the last load), so entering the tab reloads it first.
+async function openUp() {
+  if (!upBusy) resetStage();
+  emptyMsg($('#uplist'), 'Завантажуємо інвентар…');
+  await loadInv();
+  if (view === 'up') renderUp();
+}
+
+let upQTimer = 0;
+$('#upq').addEventListener('input', (e) => { clearTimeout(upQTimer); upQTimer = setTimeout(() => { upFilter.q = e.target.value.trim(); loadTargets(true); }, 300); });
+$('#upsort').addEventListener('change', (e) => { upFilter.sort = e.target.value; loadTargets(true); });
+$('#upchips').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#upchips button').forEach((x) => x.classList.toggle('on', x === b));
+  upFilter.min = b.dataset.min; upFilter.max = b.dataset.max; loadTargets(true);
+});
+$('#upmore').addEventListener('click', () => loadTargets(false));
+
 $('#upgo').addEventListener('click', async () => {
   if (upBusy || !upTarget || !upSel.size) return;
-  upBusy = true; $('#upgo').disabled = true; $('#upres').textContent = 'Крутимо…';
-  const nd = $('#needle');
+  upBusy = true; $('#upgo').disabled = true; resetStage(); $('#upres').textContent = 'Крутимо…';
+  const nd = $('#needle'), arena = $('#arena');
   try {
     const r = await api('/upgrade', 'POST', { ids: [...upSel], target: upTarget.key });
-    const a = r.roll * 3.6; // the server's roll IS the landing angle: win zone = [0, chance*3.6)
-    nd.style.transition = quickMotion() ? 'none' : 'transform 5s cubic-bezier(.1,.6,.1,1)';
+    setGauge(r.chance); // the server's figure is the one that counts
+    // The server's roll (0-100 %) IS the landing angle: the win zone is [0, chance*3.6) degrees from the top, clockwise.
+    const a = r.roll * 3.6, quick = quickMotion();
+    void nd.offsetWidth;
+    arena.classList.add('spin');
+    nd.style.transition = quick ? 'none' : 'transform 5s cubic-bezier(.12,.6,.1,1)';
     nd.style.transform = 'rotate(' + (1800 + a) + 'deg)';
-    await sleep(quickMotion() ? 0 : 5100);
+    await sleep(quick ? 0 : 5100);
+    arena.classList.remove('spin');
     nd.style.transition = 'none'; nd.style.transform = 'rotate(' + a + 'deg)';
+    arena.classList.add(r.win ? 'win' : 'lose'); $('#slotL').classList.toggle('lost', !r.win);
+    if (r.win) $('#slotR').replaceChildren(icard(r.item, '')); // the real instance you received (wear, float)
     setBal(r.balance);
-    $('#upres').textContent = r.win ? 'Успіх! Ти отримав ' + r.item.name : 'Не пощастило, вкладені скіни втрачено.';
-    upSel.clear(); upTarget = null; await loadInv();
-  } catch (e) { $('#upres').textContent = e.message; }
-  upBusy = false; renderUp();
+    $('#upres').textContent = r.win ? 'Успіх! Ти отримав ' + r.item.name
+      : 'Не пощастило: випало ' + fmtPct(r.roll) + '% при шансі ' + fmtPct(r.chance) + '%. Вкладені скіни втрачено.';
+    upSel.clear(); upTarget = null; await loadInv(); renderUpInv(); loadTargets(true);
+    $('#upsum').textContent = ''; $('#upgo').disabled = true;
+  } catch (e) { $('#upres').textContent = e.message; paintStage(); }
+  upBusy = false;
 });
 
 /* ---------- boot ---------- */
