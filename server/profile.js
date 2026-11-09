@@ -1,6 +1,6 @@
 'use strict';
 const express = require('express');
-const { HttpError, bodyOf } = require('./util');
+const { HttpError, ah, bodyOf } = require('./util');
 
 const COLOR_PRESETS = 12;
 const bad = (m) => new HttpError(400, 'invalid_input', m);
@@ -11,12 +11,7 @@ function createProfile({ db, catalog, limiters, requireAuth }) {
   const r = express.Router();
   const lookup = (key) => catalog.items.get(key) || (catalog.customItems && catalog.customItems.get(key)); // catalog or admin-made
   const guard = [requireAuth, limiters.game];
-  const q = {
-    user: db.prepare('SELECT username, avatar, best_drop, created_at FROM users WHERE id = ?'),
-    owns: db.prepare('SELECT 1 FROM items WHERE user_id = ? AND item_key = ? LIMIT 1'),
-    setAvatar: db.prepare('UPDATE users SET avatar = ? WHERE id = ?'),
-    hist: db.prepare('SELECT id, kind, data, created_at FROM history WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?'),
-  };
+  const getUser = (id) => db.get('SELECT username, avatar, best_drop, created_at FROM users WHERE id = $1', [id]);
 
   // The avatar is never a user-supplied URL: either a colour preset or the image of a catalog item.
   function avatarView(u) {
@@ -30,15 +25,15 @@ function createProfile({ db, catalog, limiters, requireAuth }) {
     return { type: 'color', index: nameHash(u.username) % COLOR_PRESETS };
   }
 
-  r.get('/profile', guard, (req, res) => {
-    const u = q.user.get(req.user.id);
+  r.get('/profile', guard, ah(async (req, res) => {
+    const u = await getUser(req.user.id);
     res.json({
       username: u.username, createdAt: u.created_at, avatar: avatarView(u),
       bestDrop: u.best_drop ? safeParse(u.best_drop) : null,
     });
-  });
+  }));
 
-  r.post('/profile/avatar', guard, (req, res) => {
+  r.post('/profile/avatar', guard, ah(async (req, res) => {
     const a = bodyOf(req).avatar;
     if (typeof a !== 'string' || a.length > 120) throw bad('Некоректний аватар');
     const m = /^c:(\d{1,2})$/.exec(a);
@@ -47,27 +42,29 @@ function createProfile({ db, catalog, limiters, requireAuth }) {
     } else if (a.startsWith('i:')) {
       const key = a.slice(2);
       if (!lookup(key)) throw bad('Невідомий предмет');
-      const best = safeParse(q.user.get(req.user.id).best_drop);
-      if (!q.owns.get(req.user.id, key) && !(best && best.key === key)) {
+      const best = safeParse((await getUser(req.user.id)).best_drop);
+      const owns = await db.get('SELECT 1 AS x FROM items WHERE user_id = $1 AND item_key = $2 LIMIT 1', [req.user.id, key]);
+      if (!owns && !(best && best.key === key)) {
         throw new HttpError(403, 'not_owned', 'Аватаркою може бути лише скін, який у тебе є або був найкращим дропом');
       }
     } else throw bad('Некоректний аватар');
-    q.setAvatar.run(a, req.user.id);
-    res.json({ avatar: avatarView({ ...q.user.get(req.user.id) }) });
-  });
+    await db.run('UPDATE users SET avatar = $1 WHERE id = $2', [a, req.user.id]);
+    res.json({ avatar: avatarView(await getUser(req.user.id)) });
+  }));
 
-  r.get('/history', guard, (req, res) => {
+  r.get('/history', guard, ah(async (req, res) => {
     const before = req.query.before === undefined ? Number.MAX_SAFE_INTEGER : Number(req.query.before);
     const limit = req.query.limit === undefined ? 20 : Number(req.query.limit);
     if (!Number.isSafeInteger(before) || before < 1) throw bad('Некоректний курсор');
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw bad('Некоректний ліміт');
-    const rows = q.hist.all(req.user.id, before, limit + 1);
+    const rows = await db.all('SELECT id, kind, data, created_at FROM history WHERE user_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3',
+      [req.user.id, before, limit + 1]);
     const more = rows.length > limit;
     const entries = rows.slice(0, limit)
       .map((x) => ({ id: x.id, kind: x.kind, at: x.created_at, data: safeParse(x.data) }))
       .filter((e) => e.data);
     res.json({ entries, next: more ? rows[limit - 1].id : null });
-  });
+  }));
 
   return r;
 }
