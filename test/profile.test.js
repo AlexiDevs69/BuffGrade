@@ -1,16 +1,11 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const os = require('node:os');
-const fs = require('node:fs');
-const path = require('node:path');
-const Database = require('better-sqlite3');
-const { boot } = require('./helpers');
-const { openDb } = require('../server/db');
+const { boot, dbTest } = require('./helpers');
 
-const histCount = (t, name) => t.db.prepare('SELECT COUNT(*) n FROM history WHERE user_id=?').get(t.uid(name)).n;
+const histCount = async (t, name) => t.count('SELECT COUNT(*) n FROM history WHERE user_id=$1', await t.uid(name));
 
-test('history: every case opening is recorded with case + item snapshot', async () => {
+dbTest('history: every case opening is recorded with case + item snapshot', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const open = await a.post('/api/cases/crate-1/open', {});
@@ -24,10 +19,10 @@ test('history: every case opening is recorded with case + item snapshot', async 
   assert.equal(e.data.item.name, open.json.item.name);
   assert.equal(e.data.item.price, open.json.item.price);
   assert.equal(e.data.item.id, undefined); // snapshots carry no inventory ids
-  t.close();
+  await t.close();
 });
 
-test('history is private: each user only ever sees their own', async () => {
+dbTest('history is private: each user only ever sees their own', async () => {
   const t = await boot();
   const a = await t.signup('alice'); const b = await t.signup('bob');
   await a.post('/api/cases/crate-1/open', {}); await a.post('/api/cases/crate-2/open', {});
@@ -37,18 +32,18 @@ test('history is private: each user only ever sees their own', async () => {
   assert.equal((await b.get('/api/history')).json.entries.length, 1);
   assert.equal((await t.mkClient().get('/api/history')).status, 401);
   assert.equal((await t.mkClient().get('/api/profile')).status, 401);
-  t.close();
+  await t.close();
 });
 
-test('history: upgrade entry keeps the stake even though those items are gone', async () => {
+dbTest('history: upgrade entry keeps the stake even though those items are gone', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   const top = t.catalog.targets[t.catalog.targets.length - 1];
   const stake = Math.ceil(top.price / 3);
-  const id1 = t.give('alice', stake);
+  const id1 = await t.give('alice', stake);
   const r = await a.post('/api/upgrade', { ids: [id1], target: top.key });
   assert.equal(r.status, 200);
-  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM items WHERE id=?').get(id1).n, 0);
+  assert.equal((await t.one('SELECT COUNT(*) n FROM items WHERE id=$1', id1)).n, 0);
   const e = (await a.get('/api/history')).json.entries[0];
   assert.equal(e.kind, 'upgrade');
   assert.equal(e.data.stake.length, 1);
@@ -58,13 +53,13 @@ test('history: upgrade entry keeps the stake even though those items are gone', 
   assert.equal(e.data.chance, r.json.chance);
   assert.equal(e.data.result === null, !r.json.win);
   if (r.json.win) assert.equal(e.data.result.key, top.key);
-  t.close();
+  await t.close();
 });
 
-test('history pagination, validation and newest-first order', async () => {
+dbTest('history pagination, validation and newest-first order', async () => {
   const t = await boot();
   const a = await t.signup('alice');
-  t.setBal('alice', 100000);
+  await t.setBal('alice', 100000);
   for (let i = 0; i < 7; i++) await a.post('/api/cases/crate-1/open', {});
   const p1 = (await a.get('/api/history?limit=3')).json;
   assert.equal(p1.entries.length, 3); assert.ok(p1.next);
@@ -75,26 +70,25 @@ test('history pagination, validation and newest-first order', async () => {
   assert.equal(p3.entries.length, 1); assert.equal(p3.next, null);
   for (const qs of ['before=abc', 'before=-1', 'before=0', 'limit=0', 'limit=51', 'limit=x', 'before=1&before=2', "before=1;DROP TABLE history"])
     assert.equal((await a.get('/api/history?' + qs)).status, 400, qs);
-  t.close();
+  await t.close();
 });
 
-test('history is capped per user, newest rows survive', async () => {
+dbTest('history is capped per user, newest rows survive', async () => {
   const t = await boot();
   const a = await t.signup('alice');
-  const ins = t.db.prepare("INSERT INTO history(user_id,kind,data,created_at) VALUES(?, 'case', '{}', ?)");
-  t.db.transaction(() => { for (let i = 0; i < 510; i++) ins.run(t.uid('alice'), i); })();
+  await t.db.run("INSERT INTO history(user_id,kind,data,created_at) SELECT $1, 'case', '{}', g FROM generate_series(0, 509) AS g", [await t.uid('alice')]);
   await a.post('/api/cases/crate-1/open', {});
-  assert.equal(histCount(t, 'alice'), 500);
-  const newest = t.db.prepare('SELECT data FROM history WHERE user_id=? ORDER BY id DESC LIMIT 1').get(t.uid('alice')).data;
+  assert.equal(await histCount(t, 'alice'), 500);
+  const newest = (await t.one('SELECT data FROM history WHERE user_id=$1 ORDER BY id DESC LIMIT 1', await t.uid('alice'))).data;
   assert.match(newest, /crate-1/);
-  t.close();
+  await t.close();
 });
 
-test('best drop: tracks the maximum, never decreases, survives selling', async () => {
+dbTest('best drop: tracks the maximum, never decreases, survives selling', async () => {
   const t = await boot();
   const a = await t.signup('alice');
   assert.equal((await a.get('/api/profile')).json.bestDrop, null);
-  t.setBal('alice', 1e6);
+  await t.setBal('alice', 1e6);
   let max = 0;
   for (let i = 0; i < 25; i++) {
     const r = await a.post('/api/cases/crate-1/open', {});
@@ -110,12 +104,12 @@ test('best drop: tracks the maximum, never decreases, survives selling', async (
   assert.equal((await a.get('/api/inventory')).json.items.length, 0);
   // upgrades do not count as a "drop"
   const top = t.catalog.targets[t.catalog.targets.length - 1];
-  t.give('alice', Math.ceil(top.price / 2)); t.setBal('alice', 0);
+  await t.give('alice', Math.ceil(top.price / 2)); await t.setBal('alice', 0);
   assert.equal((await a.get('/api/profile')).json.bestDrop.price, max);
-  t.close();
+  await t.close();
 });
 
-test('avatar: presets validated, item avatars require ownership, never a URL', async () => {
+dbTest('avatar: presets validated, item avatars require ownership, never a URL', async () => {
   const t = await boot();
   const a = await t.signup('alice'); const b = await t.signup('bob');
   const p0 = (await a.get('/api/profile')).json;
@@ -128,33 +122,25 @@ test('avatar: presets validated, item avatars require ownership, never a URL', a
   const key = t.catalog.targets[0].key;
   const r = await a.post('/api/profile/avatar', { avatar: 'i:' + key });
   assert.equal(r.status, 403); assert.equal(r.json.error, 'not_owned');
-  t.give('alice', 50, key);
+  await t.give('alice', 50, key);
   const ok = await a.post('/api/profile/avatar', { avatar: 'i:' + key });
   assert.equal(ok.status, 200); assert.equal(ok.json.avatar.type, 'item');
   assert.match(ok.json.avatar.image, /^https:\/\/raw\.githubusercontent\.com\//);
   assert.equal((await b.post('/api/profile/avatar', { avatar: 'i:' + key })).status, 403); // bob doesn't own it
   assert.equal((await a.get('/api/profile')).json.avatar.key, key);
   // a tampered DB value can't smuggle an arbitrary URL out either
-  t.db.prepare("UPDATE users SET avatar='https://evil.example/x.png' WHERE username='alice'").run();
+  await t.db.run("UPDATE users SET avatar='https://evil.example/x.png' WHERE username='alice'");
   assert.equal((await a.get('/api/profile')).json.avatar.type, 'color');
-  t.close();
+  await t.close();
 });
 
-test('migration: an old database without profile columns is upgraded in place', () => {
-  const f = path.join(os.tmpdir(), 'bg-mig-' + process.pid + '.db');
-  fs.rmSync(f, { force: true });
-  const old = new Database(f);
-  old.exec(`CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, pass_hash TEXT NOT NULL,
-            balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0), daily_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
-            INSERT INTO users(username,pass_hash,balance,created_at) VALUES('legacy','x',42,1);`);
-  old.close();
-  const db = openDb(f);
-  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-  for (const c of ['avatar', 'best_drop', 'best_price']) assert.ok(cols.includes(c), c);
-  const u = db.prepare('SELECT balance, avatar, best_price FROM users WHERE username=?').get('legacy');
-  assert.deepEqual({ ...u }, { balance: 42, avatar: '', best_price: 0 });
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM sqlite_master WHERE name=?').get('history').n, 1);
-  db.close();
-  openDb(f).close(); // idempotent
-  fs.rmSync(f, { force: true });
+dbTest('schema: opening the database twice is harmless and usernames are unique case-insensitively', async () => {
+  const t = await boot();
+  const { openDb } = require('../server/db');
+  const again = await openDb({ url: process.env.TEST_DATABASE_URL, ca: require('../server/db').readCa(), schema: t.db.schema, quiet: true, poolMax: 2 }).catch((e) => e);
+  assert.ok(!(again instanceof Error), String(again));
+  await again.close();
+  await t.db.run("INSERT INTO users(username, pass_hash, balance, created_at) VALUES('Legacy', 'x', 42, 1)");
+  await assert.rejects(t.db.run("INSERT INTO users(username, pass_hash, balance, created_at) VALUES('LEGACY', 'x', 1, 1)"), { code: '23505' });
+  await t.close();
 });
