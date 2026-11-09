@@ -1,7 +1,7 @@
 'use strict';
-const crypto = require('node:crypto');
 const express = require('express');
-const { HttpError, bodyOf } = require('./util');
+const { HttpError, ah, bodyOf } = require('./util');
+const { insertItems, addLedger } = require('./db');
 const { WEAR, TIERS, CATEGORIES, marketPrice, makeInstance, itemPrice } = require('./catalog');
 
 const WEAR_BY = new Map(WEAR.map((w, i) => [w.k, { ...w, order: i }]));
@@ -41,13 +41,6 @@ function int(v, lo, hi, def) {
 
 function createMarket({ db, catalog, limiters, requireAuth }) {
   const r = express.Router();
-  const q = {
-    debit: db.prepare('UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?'),
-    balance: db.prepare('SELECT balance FROM users WHERE id = ?'),
-    insItem: db.prepare(`INSERT INTO items(id, user_id, item_key, name, image, tier, wear, wear_float, stattrak, price, created_at)
-                         VALUES(?,?,?,?,?,?,?,?,?,?,?)`),
-    ledger: db.prepare('INSERT INTO ledger(user_id, kind, delta, balance_after, meta, created_at) VALUES(?,?,?,?,?,?)'),
-  };
 
   // Public: anyone can browse. Listings are generated from the catalog (item x wear x StatTrak) and filtered on the server.
   r.get('/market', (req, res) => {
@@ -96,18 +89,17 @@ function createMarket({ db, catalog, limiters, requireAuth }) {
     res.json({ total, page: f.page, pages, listings });
   });
 
-  const buyTx = db.transaction((uid, it, w, st, now) => {
+  const buyTx = (uid, it, w, st, now) => db.tx(async (t) => {
     const cost = marketPrice(it, w, st);
-    if (q.debit.run(cost, uid, cost).changes !== 1) throw new HttpError(402, 'insufficient_funds', 'Не вистачає монет');
+    const paid = await t.get('UPDATE users SET balance = balance - $1 WHERE id = $2 AND balance >= $1 RETURNING balance', [cost, uid]);
+    if (!paid) throw new HttpError(402, 'insufficient_funds', 'Не вистачає монет');
     const inst = makeInstance(it, w, st); // price of the instance is its sell value, not what was paid
-    const id = crypto.randomBytes(12).toString('base64url');
-    q.insItem.run(id, uid, inst.key, inst.name, inst.image, inst.tier, inst.wear, inst.float, inst.stattrak ? 1 : 0, inst.price, now);
-    const after = q.balance.get(uid).balance;
-    q.ledger.run(uid, 'market_buy', -cost, after, JSON.stringify({ item: id, key: inst.key, wear: inst.wear, st: inst.stattrak, value: inst.price }), now);
-    return { item: { id, ...inst }, cost, balance: after };
+    const [{ id }] = await insertItems(t, uid, [inst], now);
+    await addLedger(t, uid, 'market_buy', -cost, paid.balance, { item: id, key: inst.key, wear: inst.wear, st: inst.stattrak, value: inst.price }, now);
+    return { item: { id, ...inst }, cost, balance: paid.balance };
   });
 
-  r.post('/market/buy', requireAuth, limiters.game, (req, res) => {
+  r.post('/market/buy', requireAuth, limiters.game, ah(async (req, res) => {
     const b = bodyOf(req);
     if (typeof b.key !== 'string' || b.key.length > 100) throw bad('Невідомий предмет');
     const it = catalog.items.get(b.key);                     // the price is always computed here, never taken from the client
@@ -115,8 +107,8 @@ function createMarket({ db, catalog, limiters, requireAuth }) {
     if (!it || !w) throw bad('Невідомий предмет або знос');
     if (typeof b.stattrak !== 'boolean') throw bad('Вкажи StatTrak: true або false');
     if (b.stattrak && !it.canST) throw bad('Для цього предмета StatTrak недоступний');
-    res.json(buyTx.immediate(req.user.id, it, w, b.stattrak, Date.now()));
-  });
+    res.json(await buyTx(req.user.id, it, w, b.stattrak, Date.now()));
+  }));
 
   return r;
 }
