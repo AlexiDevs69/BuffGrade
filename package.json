@@ -5,14 +5,15 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
+    "migrate:sqlite": "node scripts/sqlite-to-postgres.js",
     "test": "node --test --test-timeout=60000"
   },
   "license": "UNLICENSED",
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
     "express": "^5.3.0",
     "express-rate-limit": "^8.7.1",
-    "helmet": "^8.3.0"
+    "helmet": "^8.3.0",
+    "pg": "^8.16.0"
   },
   "private": true,
   "engines": {
